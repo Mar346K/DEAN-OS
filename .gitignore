@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.env
+.venv
+env/
+build/
+dist/
+
+# Rust
+/target/
+**/*.rs.bk
+
+# DAEN Specific
+/storage/          # Local vector DB storage
+/staging/          # Temporary agent code area
+.DS_Store          # macOS junk

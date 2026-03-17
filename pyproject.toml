@@ -1,0 +1,21 @@
+[project]
+name = "daen-os"
+version = "0.1.0"
+description = "Distributed Autonomous Engineering Network"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.uv.workspace]
+members = [
+    "services-python/mnemosyne",
+    "services-python/oubliette",
+    "services-python/sycophant"
+]
+
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[tool.maturin]
+features = ["pyo3/extension-module"]
