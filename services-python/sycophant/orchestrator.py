@@ -64,7 +64,7 @@ async def execute_task(query: str):
                     print(f"\n[SYCOPHANT] LLM halted execution. Requesting external tool: '{tool_name}'")
 
                     # Calculate absolute path to DEAN-OS/staging/
-                    staging_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../staging"))
+                    staging_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../staging"))
                     os.makedirs(staging_dir, exist_ok=True)
                     queue_file = os.path.join(staging_dir, "quarantine_queue.txt")
 
