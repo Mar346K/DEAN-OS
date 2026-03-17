@@ -32,23 +32,23 @@ def health_check():
 async def run_code(code: str, authorized: bool = Depends(verify_agent_token)):
     """Execute Python code inside the isolated Oubliette cell."""
     try:
-        # Run the container with strict resource limits
+        # The Docker image entrypoint is already ["python", "-c"]
+        # We just need to pass the code string itself as the command.
         container_output = client.containers.run(
             image="daen-agent-sandbox",
-            command=["python", "-c", code],
-            mem_limit="512m",       # Maximum 512MB RAM
-            nano_cpus=1000000000,   # Maximum 1 CPU Core
-            network_disabled=True,  # No internet access (Zero-Exfiltration)
-            remove=True,            # Delete container immediately after finish
+            command=code,           # Just pass the code string here
+            mem_limit="512m",
+            nano_cpus=1000000000,
+            network_disabled=True,
+            remove=True,
             stdout=True,
             stderr=True
         )
         return {"output": container_output.decode("utf-8").strip()}
 
     except docker.errors.ContainerError as e:
+        # This captures the traceback from INSIDE the box
         return {"error": "Execution Error", "details": e.stderr.decode("utf-8")}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn

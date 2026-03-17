@@ -49,4 +49,4 @@ async def run_code(code: str, authorized: bool = Depends(verify_agent_token)):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8002)
+    uvicorn.run(app, host="127.0.0.1", port=8001)
