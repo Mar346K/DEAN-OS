@@ -1,0 +1,74 @@
+name: DAEN-OS Zero-Trust CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+env:
+  CARGO_TERM_COLOR: always
+  # Fail fast on any pipeline errors
+  PIPESTATUS: strict
+
+jobs:
+  security-gates:
+    name: SAST & Secret Scanning
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Secret Scan (Gitleaks)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Python SAST (Bandit)
+        run: |
+          pip install bandit
+          bandit -r services-python/ -c pyproject.toml --severity-level high --exit-zero-on-success
+
+      - name: Rust SAST (Cargo Audit)
+        run: |
+          cargo install cargo-audit
+          cargo audit
+
+  polyglot-build-test:
+    name: Build & Test (Maturin + Pytest + Cargo)
+    needs: security-gates
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v2
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Build & Test Dependencies
+        run: |
+          uv pip install --system maturin pytest
+
+      - name: Rust Linting (Clippy)
+        run: cargo clippy --workspace -- -D warnings
+
+      - name: Cargo Test (Core Rust)
+        run: cargo test --workspace --all-features
+
+      - name: Build Rust FFI (Maturin)
+        run: maturin build --release --workspace
+
+      - name: Python Tests (Microservices)
+        run: pytest services-python/ -v
