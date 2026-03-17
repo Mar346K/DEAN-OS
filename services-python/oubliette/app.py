@@ -1,6 +1,6 @@
-import docker
+﻿import docker
 from fastapi import FastAPI, HTTPException, Depends, Header
-import valkyrie_crypto  # Our Rust security shield
+import valkyrie_crypto  # Our Rust-powered security shield
 import os
 
 app = FastAPI(title="Oubliette Sandbox Service")
@@ -9,7 +9,10 @@ app = FastAPI(title="Oubliette Sandbox Service")
 INTERNAL_SECRET = "daen-internal-dev-secret-2026"  # nosec B105
 
 # Initialize the Docker client
-client = docker.from_env()
+try:
+    client = docker.from_env()
+except Exception as e:
+    print(f"[ERROR] Could not connect to Docker: {e}")
 
 def verify_agent_token(authorization: str = Header(None)):
     """Zero-Trust Gatekeeper"""
@@ -32,7 +35,7 @@ async def run_code(code: str, authorized: bool = Depends(verify_agent_token)):
         # Run the container with strict resource limits
         container_output = client.containers.run(
             image="daen-agent-sandbox",
-            command=code,
+            command=["python", "-c", code],
             mem_limit="512m",       # Maximum 512MB RAM
             nano_cpus=1000000000,   # Maximum 1 CPU Core
             network_disabled=True,  # No internet access (Zero-Exfiltration)
