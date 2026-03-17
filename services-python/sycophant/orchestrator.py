@@ -1,26 +1,25 @@
 import httpx
 import asyncio
-import valkyrie_crypto  # The Rust Bridge
-import ollama           # Local AI Power
+import valkyrie_crypto
+import ollama
 from pydantic import BaseModel
+import os
+import json
 
 # --- CONFIG ---
 SECRET = "daen-internal-dev-secret-2026"  # nosec B105
 MNEMOSYNE_URL = "http://127.0.0.1:8001"
 OUBLIETTE_URL = "http://127.0.0.1:8002"
 MODEL_NAME = "llama3.1:latest"
-MAX_RETRIES = 3  # The Agent gets 3 tries to get it right
+MAX_RETRIES = 3
 
 async def execute_task(query: str):
     print(f"\n[SYCOPHANT] Intent Received: '{query}'")
 
-    # 1. SECURITY: Forge high-clearance identity
     token = valkyrie_crypto.forge_token("sycophant-core", "admin", SECRET)
     headers = {"Authorization": f"Bearer {token}"}
 
-    # Increased timeout because LLMs can take a few seconds to think
     async with httpx.AsyncClient(timeout=60.0) as client:
-        # 2. KNOWLEDGE: Search Mnemosyne for truth
         print("[SYCOPHANT] Searching Knowledge Vault...")
         try:
             memory_resp = await client.post(
@@ -35,13 +34,14 @@ async def execute_task(query: str):
             context = "No context available."
 
         system_prompt = (
-            "You are the DEAN-OS Executive. Your task is to write Python code "
-            "to solve the user's problem based on the provided context. "
-            "Output ONLY raw Python code. No markdown, no backticks, no comments."
+            "You are the DEAN-OS Executive. Your task is to write Python code to solve the user's problem. "
+            "Output ONLY raw Python code. No markdown, no comments. "
+            "CRITICAL: The Sandbox only has standard built-in Python libraries installed. "
+            "If the task is mathematically impossible without an external pip library (like requests, beautifulsoup4, numpy, etc.), "
+            "you MUST output exactly this JSON format and nothing else: {\"tool_request\": \"library_name\"}"
         )
         user_prompt = f"Context: {context}\n\nTask: {query}"
 
-        # 3 & 4. THE SELF-HEALING LOOP (Reasoning & Execution)
         for attempt in range(1, MAX_RETRIES + 1):
             print(f"\n[SYCOPHANT] --- Generation Attempt {attempt}/{MAX_RETRIES} ---")
             print(f"[SYCOPHANT] Consulting {MODEL_NAME}...")
@@ -55,6 +55,28 @@ async def execute_task(query: str):
 
             # Clean up any markdown
             generated_code = generated_code.replace("```python", "").replace("```", "").strip()
+
+            # --- THE QUARANTINE INTERCEPTOR ---
+            if generated_code.startswith("{") and "tool_request" in generated_code:
+                try:
+                    request_data = json.loads(generated_code)
+                    tool_name = request_data.get("tool_request")
+                    print(f"\n[SYCOPHANT] LLM halted execution. Requesting external tool: '{tool_name}'")
+
+                    # Calculate absolute path to DEAN-OS/staging/
+                    staging_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../staging"))
+                    os.makedirs(staging_dir, exist_ok=True)
+                    queue_file = os.path.join(staging_dir, "quarantine_queue.txt")
+
+                    # Log the request
+                    with open(queue_file, "a") as f:
+                        f.write(f"{tool_name}\n")
+
+                    return {"status": "Quarantine Request Logged", "tool": tool_name}
+                except json.JSONDecodeError:
+                    print("[SYCOPHANT] Error decoding tool request JSON. Falling back to execution attempt.")
+            # ----------------------------------
+
             print(f"[SYCOPHANT] Strategy Drafted ({len(generated_code)} chars)")
 
             print("[SYCOPHANT] Deploying to Sandbox...")
@@ -69,19 +91,17 @@ async def execute_task(query: str):
 
             result = sandbox_resp.json()
 
-            # Did the Sandbox catch a crash?
             if "error" in result:
                 error_msg = result.get('details', 'Unknown execution error')
                 print(f"[SYCOPHANT] Sandbox rejected execution:\n{error_msg.strip()}")
 
                 if attempt < MAX_RETRIES:
                     print("[SYCOPHANT] Initiating Self-Healing Protocol...")
-                    # FEED THE ERROR BACK TO THE LLM
                     user_prompt += (
                         f"\n\nWARNING: The previous code failed with this error:\n{error_msg}\n"
                         "Please rewrite the Python code to fix this. If it was a ModuleNotFoundError, "
                         "you MUST use ONLY standard built-in Python libraries (like os, sys, subprocess). "
-                        "Output ONLY raw Python code."
+                        "If the task is impossible without an external library, output the tool_request JSON."
                     )
                 else:
                     print("[SYCOPHANT] Max retries reached. Task failed.")
@@ -91,10 +111,11 @@ async def execute_task(query: str):
                 return result
 
 if __name__ == "__main__":
-    user_input = "Check the OOM thresholds and print a status report."
+    # Test a query that forces the LLM to request a tool
+    user_input = "Scrape the title of example.com using the BeautifulSoup library."
     result = asyncio.run(execute_task(user_input))
 
     if "error" in result:
         print(f"\n[FINAL SYSTEM REPORT]: EXECUTION FAILED\n{result.get('details')}")
     else:
-        print(f"\n[FINAL SYSTEM REPORT]: SUCCESS\n{result.get('output')}")
+        print(f"\n[FINAL SYSTEM REPORT]: SUCCESS\n{result}")

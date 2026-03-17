@@ -1,5 +1,5 @@
 import pytest
-from unittest.mock import patch, AsyncMock, MagicMock
+from unittest.mock import patch, AsyncMock, MagicMock, mock_open
 import sys
 import os
 
@@ -13,41 +13,64 @@ from orchestrator import execute_task
 async def test_execute_task_self_healing(mock_ollama, mock_async_client_class):
     """Test that the Orchestrator successfully retries when the Sandbox fails."""
 
-    # 1. Intercept the HTTP Client
     mock_client = AsyncMock()
     mock_async_client_class.return_value.__aenter__.return_value = mock_client
 
-    # --- Setup Fake HTTP Responses ---
-
-    # Fake Call 1: Mnemosyne Context (Success)
     mock_mnemosyne_resp = MagicMock()
     mock_mnemosyne_resp.status_code = 200
     mock_mnemosyne_resp.json.return_value = {"results": [{"text": "Mock context from memory."}]}
 
-    # Fake Call 2: Oubliette Execution (Simulate a Crash!)
     mock_oubliette_fail = MagicMock()
     mock_oubliette_fail.status_code = 200
-    mock_oubliette_fail.json.return_value = {"error": "Execution Error", "details": "ModuleNotFoundError: No module named 'psutil'"}
+    mock_oubliette_fail.json.return_value = {"error": "Execution Error", "details": "ModuleNotFoundError"}
 
-    # Fake Call 3: Oubliette Execution (Simulate a Success on Retry)
     mock_oubliette_success = MagicMock()
     mock_oubliette_success.status_code = 200
     mock_oubliette_success.json.return_value = {"output": "Hardware verified successfully!"}
 
-    # Map the fake responses to the order the Orchestrator will call them
     mock_client.post.side_effect = [
-        mock_mnemosyne_resp,     # 1st POST to /search
-        mock_oubliette_fail,     # 2nd POST to /run (Attempt 1)
-        mock_oubliette_success   # 3rd POST to /run (Attempt 2)
+        mock_mnemosyne_resp,
+        mock_oubliette_fail,
+        mock_oubliette_success
     ]
 
-    # 2. Intercept Ollama (The GPU)
     mock_ollama.return_value = {"response": "print('Mock code execution')"}
 
-    # 3. Fire the Orchestrator
     result = await execute_task("Check the hardware.")
 
-    # 4. Verify the Agentic Logic
     assert result == {"output": "Hardware verified successfully!"}
-    assert mock_ollama.call_count == 2     # Proof: It rewrote the code!
-    assert mock_client.post.call_count == 3 # Proof: 1 Memory search + 2 Sandbox runs
+    assert mock_ollama.call_count == 2
+    assert mock_client.post.call_count == 3
+
+@pytest.mark.asyncio
+@patch('orchestrator.httpx.AsyncClient')
+@patch('orchestrator.ollama.generate')
+@patch('builtins.open', new_callable=mock_open)
+@patch('orchestrator.os.makedirs')
+async def test_execute_task_tool_request(mock_makedirs, mock_file, mock_ollama, mock_async_client_class):
+    """Test that the Orchestrator safely intercepts JSON tool requests and logs them."""
+
+    mock_client = AsyncMock()
+    mock_async_client_class.return_value.__aenter__.return_value = mock_client
+
+    mock_mnemosyne_resp = MagicMock()
+    mock_mnemosyne_resp.status_code = 200
+    mock_mnemosyne_resp.json.return_value = {"results": [{"text": "Mock context."}]}
+
+    # We only expect 1 POST request (to Mnemosyne). The Sandbox should NEVER be called.
+    mock_client.post.return_value = mock_mnemosyne_resp
+
+    # Force the LLM to output the quarantine request format
+    mock_ollama.return_value = {"response": '{"tool_request": "beautifulsoup4"}'}
+
+    result = await execute_task("Scrape a site.")
+
+    # 1. Verify the Brain aborted execution and returned the correct status
+    assert result == {"status": "Quarantine Request Logged", "tool": "beautifulsoup4"}
+
+    # 2. Verify the Sandbox was never called
+    assert mock_client.post.call_count == 1
+
+    # 3. Verify the tool was written to the file
+    mock_file.assert_called_once()
+    mock_file().write.assert_called_with("beautifulsoup4\n")
