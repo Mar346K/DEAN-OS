@@ -6,7 +6,6 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = []
 
-# This explicitly tells uv not to try to build the root directory
 [tool.uv]
 package = false
 
@@ -16,3 +15,12 @@ members = [
     "services-python/oubliette",
     "services-python/sycophant"
 ]
+
+# Add this back so Maturin and UV have a valid backend to talk to
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+
+[tool.bandit]
+exclude_dirs = ["tests", ".venv"]
