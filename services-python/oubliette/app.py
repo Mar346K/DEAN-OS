@@ -1,7 +1,8 @@
-﻿import docker
+﻿import os
+import docker
 from fastapi import FastAPI, HTTPException, Depends, Header
+from pydantic import BaseModel
 import valkyrie_crypto  # Our Rust-powered security shield
-import os
 
 app = FastAPI(title="Oubliette Sandbox Service")
 
@@ -13,6 +14,10 @@ try:
     client = docker.from_env()
 except Exception as e:
     print(f"[ERROR] Could not connect to Docker: {e}")
+
+# Tell FastAPI to expect a JSON object with a "code" string
+class CodePayload(BaseModel):
+    code: str
 
 def verify_agent_token(authorization: str = Header(None)):
     """Zero-Trust Gatekeeper"""
@@ -29,14 +34,12 @@ def health_check():
     return {"status": "online", "sandbox_image": "daen-agent-sandbox"}
 
 @app.post("/run")
-async def run_code(code: str, authorized: bool = Depends(verify_agent_token)):
+async def run_code(payload: CodePayload, authorized: bool = Depends(verify_agent_token)):
     """Execute Python code inside the isolated Oubliette cell."""
     try:
-        # The Docker image entrypoint is already ["python", "-c"]
-        # We just need to pass the code string itself as the command.
         container_output = client.containers.run(
             image="daen-agent-sandbox",
-            command=code,           # Just pass the code string here
+            command=[payload.code], # The safe array format using Pydantic
             mem_limit="512m",
             nano_cpus=1000000000,
             network_disabled=True,
@@ -49,6 +52,8 @@ async def run_code(code: str, authorized: bool = Depends(verify_agent_token)):
     except docker.errors.ContainerError as e:
         # This captures the traceback from INSIDE the box
         return {"error": "Execution Error", "details": e.stderr.decode("utf-8")}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
