@@ -3,114 +3,81 @@ import sys
 import subprocess # nosec B404
 import re
 
-# Use absolute paths so this script can be run from anywhere
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 QUEUE_FILE = os.path.join(BASE_DIR, "staging", "quarantine_queue.txt")
 DOCKERFILE_PATH = os.path.join(BASE_DIR, "infrastructure", "containers", "sandbox.Dockerfile")
 
-# A simple allowlist for now. In a production environment,
-# this would ping a vulnerability database (like PyPI or Snyk).
+# The normalized allowlist
 APPROVED_LIBRARIES = ["beautifulsoup4", "requests", "numpy", "pandas", "psutil"]
 
-def scan_package(package_name: str) -> bool:
-    """Security Gate: Ensure the requested package is safe to install."""
-    # Normalize to lowercase for comparison
+def scan_package(package_name: str):
+    """Normalize and audit requested packages."""
     pkg_lower = package_name.lower()
 
-    # Map common naming hallucinations to actual PyPI names
-    mapping = {
+    # Translation Layer: Map common LLM naming errors to real packages
+    translation_map = {
         "beautifulsoup": "beautifulsoup4",
+        "beautifulsoup3": "beautifulsoup4",
         "bs4": "beautifulsoup4"
     }
-    target = mapping.get(pkg_lower, pkg_lower)
 
-    # Clean the string
-    clean_name = re.sub(r'[^a-zA-Z0-9_\-]', '', target)
+    target = translation_map.get(pkg_lower, pkg_lower)
 
-    if clean_name in [lib.lower() for lib in APPROVED_LIBRARIES]:
-        return True
+    # Final security check against allowlist
+    if target in APPROVED_LIBRARIES:
+        return target
 
-    print(f"[FORGE-SECURITY] Rejected: '{package_name}' not in approved list.")
-    return False
+    print(f"[FORGE-SECURITY] Rejected: '{package_name}' (Target: {target}) not in approved list.")
+    return None
 
 def upgrade_sandbox(package_name: str):
-    """Rewrite the Dockerfile and rebuild the container."""
+    """Rewrite Dockerfile and build."""
     print(f"\n[FORGE] Upgrading Sandbox with: {package_name}")
 
-    if not os.path.exists(DOCKERFILE_PATH):
-        print(f"[FORGE] ERROR: Dockerfile not found at {DOCKERFILE_PATH}")
-        return False
-
-    # 1. Read the existing Dockerfile
     with open(DOCKERFILE_PATH, "r") as f:
         lines = f.readlines()
 
-    if not lines:
-        print("[FORGE] ERROR: Dockerfile is empty before editing. Aborting to prevent corruption.")
-        return False
-
-    # 2. Update lines
     updated = False
     new_lines = []
     for line in lines:
-        if line.startswith("RUN pip install") and package_name not in line:
+        if line.startswith("RUN pip install"):
+            # Check if normalized name is already there
+            if package_name in line:
+                print(f"[FORGE] '{package_name}' already present. Skipping.")
+                return True
             new_lines.append(line.strip() + f" {package_name}\n")
             updated = True
         else:
             new_lines.append(line)
 
-    # Failsafe: If no pip line found, append one
-    if not updated and not any(package_name in l for l in lines):
-        new_lines.append(f"RUN pip install {package_name}\n")
-        updated = True
-
-    # 3. Write back ONLY if we have content
-    if updated and len(new_lines) > 0:
+    if updated:
         with open(DOCKERFILE_PATH, "w") as f:
             f.writelines(new_lines)
-    else:
-        print(f"[FORGE] No changes needed or logic failed. Length: {len(new_lines)}")
 
-    # 4. Rebuild
-    print("[FORGE] Rebuilding daen-agent-sandbox image...")
+    print("[FORGE] Rebuilding daen-agent-sandbox...")
     try:
-        # Use absolute path for Dockerfile to be 100% sure
         subprocess.run(
             ["docker", "build", "-t", "daen-agent-sandbox", "-f", DOCKERFILE_PATH, "."],
-            check=True,
-            cwd=BASE_DIR
+            check=True, cwd=BASE_DIR
         ) # nosec B603 B607
-        print(f"[FORGE] SUCCESS! Sandbox upgraded.")
         return True
-    except subprocess.CalledProcessError as e:
-        print(f"[FORGE] ERROR: Docker build failed: {e}")
+    except Exception as e:
+        print(f"[FORGE] Build Error: {e}")
         return False
 
 def process_queue():
-    """Read the quarantine queue and process requests."""
-    if not os.path.exists(QUEUE_FILE):
-        print("[FORGE] Queue is empty. Nothing to process.")
-        return
+    if not os.path.exists(QUEUE_FILE): return
 
-    print("[FORGE] Checking Quarantine Queue...")
     with open(QUEUE_FILE, "r") as f:
-        packages = f.readlines()
+        packages = list(set(f.read().splitlines())) # Deduplicate
 
     for pkg in packages:
-        pkg = pkg.strip()
         if not pkg: continue
+        target_pkg = scan_package(pkg)
+        if target_pkg:
+            upgrade_sandbox(target_pkg)
 
-        print(f"[FORGE] Evaluating request for: '{pkg}'")
-        if scan_package(pkg):
-            if upgrade_sandbox(pkg):
-                print(f"[FORGE] '{pkg}' approved and installed.")
-        else:
-            print(f"[FORGE] '{pkg}' failed security audit. Ignored.")
-
-    # Clear the queue after processing
-    with open(QUEUE_FILE, "w") as f:
-        f.write("")
-    print("[FORGE] Queue cleared.")
+    with open(QUEUE_FILE, "w") as f: f.write("")
 
 if __name__ == "__main__":
     process_queue()

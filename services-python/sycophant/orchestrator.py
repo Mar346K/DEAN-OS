@@ -2,7 +2,6 @@ import httpx
 import asyncio
 import valkyrie_crypto
 import ollama
-from pydantic import BaseModel
 import os
 import json
 
@@ -13,11 +12,27 @@ OUBLIETTE_URL = "http://127.0.0.1:8002"
 MODEL_NAME = "llama3.1:latest"
 MAX_RETRIES = 3
 
+def get_installed_tools():
+    """Read the Dockerfile to see what pip packages are currently installed."""
+    dockerfile_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../infrastructure/containers/sandbox.Dockerfile"))
+    try:
+        with open(dockerfile_path, "r") as f:
+            for line in f:
+                if line.startswith("RUN pip install"):
+                    # Extract package names, ignoring the flags
+                    parts = line.strip().split(" ")
+                    packages = [p for p in parts if not p.startswith("-") and p not in ["RUN", "pip", "install"]]
+                    return ", ".join(packages)
+    except FileNotFoundError:
+        pass
+    return "standard built-in libraries only"
+
 async def execute_task(query: str):
     print(f"\n[SYCOPHANT] Intent Received: '{query}'")
 
     token = valkyrie_crypto.forge_token("sycophant-core", "admin", SECRET)
     headers = {"Authorization": f"Bearer {token}"}
+    installed_tools = get_installed_tools()
 
     async with httpx.AsyncClient(timeout=60.0) as client:
         print("[SYCOPHANT] Searching Knowledge Vault...")
@@ -28,19 +43,26 @@ async def execute_task(query: str):
                 headers=headers
             )
             results = memory_resp.json().get("results", [])
-            context = results[0]["text"] if results else "No specific documentation found."
+            context = "\n\n--- NEXT KNOWLEDGE CHUNK ---\n\n".join([r["text"] for r in results]) if results else "No specific documentation found."
         except Exception as e:
             print(f"[SYCOPHANT] Warning: Mnemosyne unreachable - {e}")
             context = "No context available."
 
+        # --- THE X-RAY: See what the database actually found ---
+        print(f"\n[VAULT X-RAY]\n{context}\n-----------------\n")
+
+        # --- THE STRICTER HITL PROMPT ---
         system_prompt = (
             "You are the DEAN-OS Executive. Your task is to write Python code to solve the user's problem. "
             "Output ONLY raw Python code. No markdown, no comments. "
-            "CRITICAL: The Sandbox only has standard built-in Python libraries installed. "
-            "If the task is mathematically impossible without an external pip library (like requests, beautifulsoup4, numpy, etc.), "
-            "you MUST output exactly this JSON format and nothing else: {\"tool_request\": \"library_name\"}"
+            "CRITICAL RULES:\n"
+            "1. You MUST base your solution STRICTLY on the text provided in the Context below.\n"
+            "2. If the Context DOES NOT contain the information needed to answer the prompt, DO NOT hallucinate or guess. "
+            "Instead, output exactly this JSON format: {\"knowledge_request\": \"Describe what information you are missing\"}\n"
+            f"3. The Sandbox currently has these libraries installed: {installed_tools}. "
+            "If the task requires an external pip library NOT listed, output: {\"tool_request\": \"library_name\"}"
         )
-        user_prompt = f"Context: {context}\n\nTask: {query}"
+        user_prompt = f"User Query: {query}\n\nContext:\n{context}"
 
         for attempt in range(1, MAX_RETRIES + 1):
             print(f"\n[SYCOPHANT] --- Generation Attempt {attempt}/{MAX_RETRIES} ---")
@@ -56,25 +78,37 @@ async def execute_task(query: str):
             # Clean up any markdown
             generated_code = generated_code.replace("```python", "").replace("```", "").strip()
 
-            # --- THE QUARANTINE INTERCEPTOR ---
-            if generated_code.startswith("{") and "tool_request" in generated_code:
+            # --- THE INTERCEPTOR (Tools & Knowledge) ---
+            if generated_code.startswith("{"):
                 try:
                     request_data = json.loads(generated_code)
-                    tool_name = request_data.get("tool_request")
-                    print(f"\n[SYCOPHANT] LLM halted execution. Requesting external tool: '{tool_name}'")
 
-                    # Calculate absolute path to DEAN-OS/staging/
-                    staging_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../staging"))
-                    os.makedirs(staging_dir, exist_ok=True)
-                    queue_file = os.path.join(staging_dir, "quarantine_queue.txt")
+                    # Tool Request Logic
+                    if "tool_request" in request_data:
+                        tool_name = request_data.get("tool_request")
+                        print(f"\n[SYCOPHANT] LLM halted execution. Requesting external tool: '{tool_name}'")
+                        staging_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../staging"))
+                        os.makedirs(staging_dir, exist_ok=True)
+                        with open(os.path.join(staging_dir, "quarantine_queue.txt"), "a") as f:
+                            f.write(f"{tool_name}\n")
+                        return {"status": "Quarantine Request Logged", "tool": tool_name}
 
-                    # Log the request
-                    with open(queue_file, "a") as f:
-                        f.write(f"{tool_name}\n")
+                    # Knowledge Request Logic (Human-in-the-Loop)
+                    elif "knowledge_request" in request_data:
+                        missing_info = request_data.get("knowledge_request")
+                        print(f"\n[SYCOPHANT] ⚠️ KNOWLEDGE GAP DETECTED: The AI says it is missing: '{missing_info}'")
 
-                    return {"status": "Quarantine Request Logged", "tool": tool_name}
+                        # Pause the OS and ask the user for help!
+                        human_help = input("[DEAN-OS] Please provide the missing context (or press Enter to fail): ")
+                        if not human_help:
+                            return {"error": "Human aborted knowledge request."}
+
+                        print("[SYCOPHANT] Re-evaluating with Human Intel...")
+                        user_prompt += f"\n\n[HUMAN OVERRIDE CONTEXT]: {human_help}\nPlease try writing the script again using this new info."
+                        continue # Skip the sandbox and generate again!
+
                 except json.JSONDecodeError:
-                    print("[SYCOPHANT] Error decoding tool request JSON. Falling back to execution attempt.")
+                    print("[SYCOPHANT] Error decoding JSON.")
             # ----------------------------------
 
             print(f"[SYCOPHANT] Strategy Drafted ({len(generated_code)} chars)")
@@ -99,9 +133,7 @@ async def execute_task(query: str):
                     print("[SYCOPHANT] Initiating Self-Healing Protocol...")
                     user_prompt += (
                         f"\n\nWARNING: The previous code failed with this error:\n{error_msg}\n"
-                        "Please rewrite the Python code to fix this. If it was a ModuleNotFoundError, "
-                        "you MUST use ONLY standard built-in Python libraries (like os, sys, subprocess). "
-                        "If the task is impossible without an external library, output the tool_request JSON."
+                        "Please rewrite the Python code to fix this."
                     )
                 else:
                     print("[SYCOPHANT] Max retries reached. Task failed.")
@@ -111,11 +143,10 @@ async def execute_task(query: str):
                 return result
 
 if __name__ == "__main__":
-    # Test a query that forces the LLM to request a tool
-    user_input = "Scrape the title of example.com using the BeautifulSoup library."
+    user_input = "Based ONLY on the provided context, write a python script that prints out the 5 Traceability Markers of the Memory Vault and their descriptions."
     result = asyncio.run(execute_task(user_input))
 
     if "error" in result:
-        print(f"\n[FINAL SYSTEM REPORT]: EXECUTION FAILED\n{result.get('details')}")
+        print(f"\n[FINAL SYSTEM REPORT]: EXECUTION FAILED\n{result.get('details', result)}")
     else:
         print(f"\n[FINAL SYSTEM REPORT]: SUCCESS\n{result}")
