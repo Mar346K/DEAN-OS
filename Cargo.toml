@@ -1,6 +1,6 @@
 [workspace]
 members = [
-    "core-rust/valkyrie-crytpo",
+    "core-rust/valkyrie-crypto",
     "services-rust/aethelgard"
 ]
 resolver = "2"

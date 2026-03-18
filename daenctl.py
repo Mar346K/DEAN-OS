@@ -1,13 +1,15 @@
 import sys
 import subprocess # nosec B404
 import time
-import signal
 import os
 
 # --- CONFIG ---
+# sys.executable ensures we use the EXACT same Python environment
+# that is currently running this script.
 SERVICES = {
-    "memory": ["uv", "run", "python", "services-python/mnemosyne/app.py"],
-    "sandbox": ["uv", "run", "python", "services-python/oubliette/app.py"]
+    "memory": [sys.executable, "services-python/mnemosyne/app.py"],
+    "sandbox": [sys.executable, "services-python/oubliette/app.py"],
+    "telemetry": [os.path.abspath("target/debug/aethelgard.exe")]
 }
 
 processes = {}
@@ -17,14 +19,18 @@ def start_all():
 
     for name, cmd in SERVICES.items():
         print(f"[STARTING] {name} service...")
-        processes[name] = subprocess.Popen(cmd) # nosec B603
+        try:
+            # We use the absolute path to the Python interpreter
+            processes[name] = subprocess.Popen(cmd) # nosec B603
+        except Exception as e:
+            print(f"[ERROR] Failed to start {name}: {e}")
 
-    print("[READY] All services online. Running background Forge watcher...")
+    print("\n[READY] All services online. Running background Forge watcher...")
 
     try:
         while True:
             # Check for tool requests every 5 seconds
-            subprocess.run(["uv", "run", "python", "infrastructure/quarantine_forge.py"])  # nosec B603 B607
+            subprocess.run([sys.executable, "infrastructure/quarantine_forge.py"])  # nosec B603 B607
             time.sleep(5)
     except KeyboardInterrupt:
         shutdown()

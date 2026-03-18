@@ -12,6 +12,10 @@ dist/
 /target/
 **/*.rs.bk
 
+# Qdrant Database and Locks
+storage/
+*.lock
+
 # DAEN Specific
 /storage/          # Local vector DB storage
 /staging/          # Temporary agent code area
