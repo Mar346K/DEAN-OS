@@ -4,28 +4,47 @@ import valkyrie_crypto
 import ollama
 import os
 import json
+import time
 
 # --- CONFIG ---
 SECRET = "daen-internal-dev-secret-2026"  # nosec B105
 MNEMOSYNE_URL = "http://127.0.0.1:8001"
 OUBLIETTE_URL = "http://127.0.0.1:8002"
+AETHELGARD_URL = "http://127.0.0.1:8003/metrics" # <-- The Governor
 MODEL_NAME = "llama3.1:latest"
 MAX_RETRIES = 3
 
 def get_installed_tools():
-    """Read the Dockerfile to see what pip packages are currently installed."""
     dockerfile_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../infrastructure/containers/sandbox.Dockerfile"))
     try:
         with open(dockerfile_path, "r") as f:
             for line in f:
                 if line.startswith("RUN pip install"):
-                    # Extract package names, ignoring the flags
                     parts = line.strip().split(" ")
                     packages = [p for p in parts if not p.startswith("-") and p not in ["RUN", "pip", "install"]]
                     return ", ".join(packages)
     except FileNotFoundError:
         pass
     return "standard built-in libraries only"
+
+async def check_hardware_status():
+    """Ask Aethelgard for permission to execute."""
+    async with httpx.AsyncClient() as client:
+        while True:
+            try:
+                resp = await client.get(AETHELGARD_URL, timeout=2.0)
+                if resp.status_code == 200:
+                    metrics = resp.json()
+                    if metrics.get("status") == "CRITICAL":
+                        print(f"\n[GOVERNOR INTERCEPT] Hardware under heavy load (RAM: {metrics.get('ram_usage_percent'):.1f}%). Throttling AI execution for 5 seconds...")
+                        await asyncio.sleep(5)
+                        continue
+                    else:
+                        print(f"[GOVERNOR APPROVED] Hardware Healthy (RAM: {metrics.get('ram_usage_percent'):.1f}%).")
+                        return True
+            except Exception:
+                print("[WARNING] Aethelgard Governor unreachable. Bypassing safety checks...")
+                return True
 
 async def execute_task(query: str):
     print(f"\n[SYCOPHANT] Intent Received: '{query}'")
@@ -48,10 +67,6 @@ async def execute_task(query: str):
             print(f"[SYCOPHANT] Warning: Mnemosyne unreachable - {e}")
             context = "No context available."
 
-        # --- THE X-RAY: See what the database actually found ---
-        print(f"\n[VAULT X-RAY]\n{context}\n-----------------\n")
-
-        # --- THE STRICTER HITL PROMPT ---
         system_prompt = (
             "You are the DEAN-OS Executive. Your task is to write Python code to solve the user's problem. "
             "Output ONLY raw Python code. No markdown, no comments. "
@@ -66,6 +81,10 @@ async def execute_task(query: str):
 
         for attempt in range(1, MAX_RETRIES + 1):
             print(f"\n[SYCOPHANT] --- Generation Attempt {attempt}/{MAX_RETRIES} ---")
+
+            # ---> HARDWARE CHECK BEFORE AI GENERATION <---
+            await check_hardware_status()
+
             print(f"[SYCOPHANT] Consulting {MODEL_NAME}...")
 
             response = ollama.generate(
@@ -75,15 +94,11 @@ async def execute_task(query: str):
             )
             generated_code = response['response'].strip()
 
-            # Clean up any markdown
             generated_code = generated_code.replace("```python", "").replace("```", "").strip()
 
-            # --- THE INTERCEPTOR (Tools & Knowledge) ---
             if generated_code.startswith("{"):
                 try:
                     request_data = json.loads(generated_code)
-
-                    # Tool Request Logic
                     if "tool_request" in request_data:
                         tool_name = request_data.get("tool_request")
                         print(f"\n[SYCOPHANT] LLM halted execution. Requesting external tool: '{tool_name}'")
@@ -93,23 +108,19 @@ async def execute_task(query: str):
                             f.write(f"{tool_name}\n")
                         return {"status": "Quarantine Request Logged", "tool": tool_name}
 
-                    # Knowledge Request Logic (Human-in-the-Loop)
                     elif "knowledge_request" in request_data:
                         missing_info = request_data.get("knowledge_request")
                         print(f"\n[SYCOPHANT] ⚠️ KNOWLEDGE GAP DETECTED: The AI says it is missing: '{missing_info}'")
-
-                        # Pause the OS and ask the user for help!
                         human_help = input("[DEAN-OS] Please provide the missing context (or press Enter to fail): ")
                         if not human_help:
                             return {"error": "Human aborted knowledge request."}
 
                         print("[SYCOPHANT] Re-evaluating with Human Intel...")
                         user_prompt += f"\n\n[HUMAN OVERRIDE CONTEXT]: {human_help}\nPlease try writing the script again using this new info."
-                        continue # Skip the sandbox and generate again!
+                        continue
 
                 except json.JSONDecodeError:
                     print("[SYCOPHANT] Error decoding JSON.")
-            # ----------------------------------
 
             print(f"[SYCOPHANT] Strategy Drafted ({len(generated_code)} chars)")
 
