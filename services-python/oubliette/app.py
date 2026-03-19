@@ -69,7 +69,10 @@ async def run_in_workspace(payload: RunRequest, authorized: bool = Depends(verif
         return {"output": container_output.decode("utf-8").strip()}
 
     except docker.errors.ContainerError as e:
-        return {"error": "Execution Error", "details": e.stderr.decode("utf-8")}
+        # [FIX] The Docker SDK puts ALL output (stdout + stderr) into `e.stderr` when a container crashes.
+        logs = e.stderr.decode("utf-8") if isinstance(e.stderr, bytes) else str(e.stderr or "")
+
+        return {"error": "Execution Error", "details": logs.strip()}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
