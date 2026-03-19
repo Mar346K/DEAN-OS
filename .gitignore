@@ -20,3 +20,6 @@ storage/
 /storage/          # Local vector DB storage
 /staging/          # Temporary agent code area
 .DS_Store          # macOS junk
+
+# AI Generated Workspace
+staging/
