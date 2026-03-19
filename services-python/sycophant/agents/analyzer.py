@@ -11,7 +11,8 @@ class Analyzer:
         print(f"[ANALYZER] Dispatching {test_filename} to Oubliette for isolated evaluation...")
 
         # Forge the Zero-Trust token
-        token = valkyrie_crypto.forge_token("analyzer-agent", "admin", self.secret)
+        # [SECURITY UPGRADE] Forge token with Least Privilege ('analyzer' role), NOT 'admin'
+        token = valkyrie_crypto.forge_token("analyzer-agent", "analyzer", self.secret)
         headers = {"Authorization": f"Bearer {token}"}
 
         # We use a clever wrapper script to trigger pytest programmatically inside the sandbox

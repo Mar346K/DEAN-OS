@@ -22,13 +22,15 @@ class RunRequest(BaseModel):
     entrypoint: str = "main.py"
 
 def verify_agent_token(authorization: str = Header(None)):
-    """Zero-Trust Gatekeeper"""
+    """Zero-Trust Gatekeeper with RBAC Enforcer"""
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing Authorization Token")
 
     token = authorization.split(" ")[1]
-    if not valkyrie_crypto.validate_token(token, INTERNAL_SECRET):
-        raise HTTPException(status_code=403, detail="Invalid Token")
+
+    # [SECURITY UPGRADE] Enforce exact scope instead of just validating the signature
+    if not valkyrie_crypto.enforce_scope(token, INTERNAL_SECRET, "sandbox:execute"):
+        raise HTTPException(status_code=403, detail="Access Denied: Missing 'sandbox:execute' scope")
     return True
 
 @app.get("/health")
