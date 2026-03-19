@@ -1,6 +1,11 @@
 import ollama
 import os
 import json
+import sys
+
+# Wire up the path so we can access the tools directory
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from tools.ast_mapper import ProjectMapper
 
 class MainCoder:
     def __init__(self, model_name="llama3.1:latest"):
@@ -11,7 +16,10 @@ class MainCoder:
         filename = target_file.get("filename")
         print(f"[CODER] Writing implementation for: {filename}...")
 
-        # [PHASE 12 UPGRADE] The Grammar FSM Schema
+        # [PHASE 14] Generate the live AST Map of the workspace
+        mapper = ProjectMapper(self.workspace_dir)
+        ast_map = mapper.generate_map()
+
         code_schema = {
             "type": "object",
             "properties": {
@@ -33,6 +41,7 @@ class MainCoder:
         )
 
         user_prompt = (
+            f"GLOBAL EXPORT MAP (Current state of the project):\n{ast_map}\n\n"
             f"PROJECT BLUEPRINT:\n{project_blueprint}\n\n"
             f"YOUR TASK:\nWrite the complete implementation for the file: {filename}\n"
             f"Purpose: {target_file.get('purpose')}\n"
@@ -44,7 +53,6 @@ class MainCoder:
             user_prompt += f"\n\nCRITICAL ERROR FEEDBACK:\nYour previous attempt failed with the following errors:\n{feedback}\n\nFix these errors in the new code.\n"
 
         try:
-            # format=code_schema forces Ollama to strictly adhere to the FSM
             response = ollama.generate(
                 model=self.model_name,
                 system=system_prompt,
@@ -52,12 +60,10 @@ class MainCoder:
                 format=code_schema
             )
 
-            # We no longer need regex! The FSM guarantees valid JSON.
             result_json = json.loads(response['response'])
             raw_code = result_json.get("code", "")
 
             file_path = os.path.join(self.workspace_dir, filename)
-            # [FIX] Automatically create parent directories if the Architect dictates a folder structure
             os.makedirs(os.path.dirname(file_path), exist_ok=True)
 
             with open(file_path, "w", encoding="utf-8") as f:

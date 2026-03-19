@@ -1,6 +1,11 @@
 import ollama
 import os
 import json
+import sys
+
+# Wire up the path so we can access the tools directory
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from tools.ast_mapper import ProjectMapper
 
 class Tester:
     def __init__(self, model_name="llama3.1:latest"):
@@ -18,7 +23,10 @@ class Tester:
         with open(file_path, "r", encoding="utf-8") as f:
             source_code = f.read()
 
-        # [PHASE 12 UPGRADE] The Grammar FSM Schema
+        # [PHASE 14] Generate the live AST Map of the workspace
+        mapper = ProjectMapper(self.workspace_dir)
+        ast_map = mapper.generate_map()
+
         test_schema = {
             "type": "object",
             "properties": {
@@ -42,9 +50,11 @@ class Tester:
         module_name = filename.replace('.py', '')
 
         user_prompt = (
+            f"GLOBAL EXPORT MAP (Available functions to import):\n{ast_map}\n\n"
             f"TARGET MODULE: {module_name}\n\n"
             f"SOURCE CODE TO TEST:\n{source_code}\n\n"
             f"Write a comprehensive pytest suite for this code. Import it using `import {module_name}`.\n"
+            "DO NOT test functions that do not exist in the source code or the export map."
         )
 
         if feedback:
@@ -52,7 +62,6 @@ class Tester:
             user_prompt += f"\n\nCRITICAL ERROR FEEDBACK:\nYour previous test suite failed with the following errors:\n{feedback}\n\nRewrite the test suite to fix these errors.\n"
 
         try:
-            # format=test_schema forces FSM adherence
             response = ollama.generate(
                 model=self.model_name,
                 system=system_prompt,
@@ -63,7 +72,6 @@ class Tester:
             result_json = json.loads(response['response'])
             raw_code = result_json.get("code", "")
 
-            # [FIX] Handle subdirectories correctly for test files
             dirname = os.path.dirname(filename)
             basename = os.path.basename(filename)
             test_filename = os.path.join(dirname, f"test_{basename}") if dirname else f"test_{basename}"

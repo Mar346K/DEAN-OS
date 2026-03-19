@@ -3,7 +3,8 @@ import requests
 import valkyrie_crypto
 
 SECRET = os.getenv("DAEN_INTERNAL_SECRET", "daen-internal-dev-secret-2026")
-token = valkyrie_crypto.forge_token("test-mount", "admin", SECRET)
+# [FIX] Use an identity/role that actually has the sandbox:execute scope
+token = valkyrie_crypto.forge_token("test-mount", "analyzer", SECRET)
 headers = {"Authorization": f"Bearer " + token}
 
 print("[TEST] Sending execution request to Oubliette...")

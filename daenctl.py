@@ -4,11 +4,13 @@ import time
 import os
 
 # --- CONFIG ---
-# sys.executable ensures we use the EXACT same Python environment
-# that is currently running this script.
+# explicitly target the uv .venv if it exists, otherwise fallback to system python
+venv_python = os.path.abspath(".venv/Scripts/python.exe")
+python_exe = venv_python if os.path.exists(venv_python) else sys.executable
+
 SERVICES = {
-    "memory": [sys.executable, "services-python/mnemosyne/app.py"],
-    "sandbox": [sys.executable, "services-python/oubliette/app.py"],
+    "memory": [python_exe, "services-python/mnemosyne/app.py"],
+    "sandbox": [python_exe, "services-python/oubliette/app.py"],
     "telemetry": [os.path.abspath("target/debug/aethelgard.exe")]
 }
 
@@ -16,11 +18,11 @@ processes = {}
 
 def start_all():
     print("[SYSTEM] Booting DEAN-OS Infrastructure...")
+    print(f"[SYSTEM] Using Python Interpreter: {python_exe}")
 
     for name, cmd in SERVICES.items():
         print(f"[STARTING] {name} service...")
         try:
-            # We use the absolute path to the Python interpreter
             processes[name] = subprocess.Popen(cmd) # nosec B603
         except Exception as e:
             print(f"[ERROR] Failed to start {name}: {e}")
@@ -30,7 +32,7 @@ def start_all():
     try:
         while True:
             # Check for tool requests every 5 seconds
-            subprocess.run([sys.executable, "infrastructure/quarantine_forge.py"])  # nosec B603 B607
+            subprocess.run([python_exe, "infrastructure/quarantine_forge.py"])  # nosec B603 B607
             time.sleep(5)
     except KeyboardInterrupt:
         shutdown()
