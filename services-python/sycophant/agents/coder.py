@@ -1,38 +1,35 @@
 import ollama
 import os
-import re
+import json
 
 class MainCoder:
     def __init__(self, model_name="llama3.1:latest"):
         self.model_name = model_name
-        # Absolute path to the staging area
         self.workspace_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../staging/workspace"))
 
-    def _strip_markdown(self, text: str) -> str:
-        """Removes ```python and ``` blocks if the model hallucinates them."""
-        # Remove starting markdown
-        text = re.sub(r"^```python\s*", "", text, flags=re.IGNORECASE | re.MULTILINE)
-        text = re.sub(r"^```\w*\s*", "", text, flags=re.IGNORECASE | re.MULTILINE)
-        # Remove ending markdown
-        text = re.sub(r"```$", "", text, flags=re.MULTILINE)
-        return text.strip()
-
-    # [FIX] Added 'feedback' parameter for the self-healing loop
     def write_module(self, project_blueprint: dict, target_file: dict, feedback: str = None) -> str:
         filename = target_file.get("filename")
         print(f"[CODER] Writing implementation for: {filename}...")
 
+        # [PHASE 12 UPGRADE] The Grammar FSM Schema
+        code_schema = {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string",
+                    "description": "The raw, executable Python code. Absolutely no markdown formatting or conversational text."
+                }
+            },
+            "required": ["code"]
+        }
+
         system_prompt = (
-            "You are the DEAN-OS Lead Python Developer. You are part of an automated assembly line. "
-            "You will be given a project blueprint and tasked with writing the code for ONE specific file.\n\n"
-            "CRITICAL RULES:\n"
-            "1. Output ONLY the raw Python code. Do not include markdown formatting (like ```python). "
-            "Do not include conversational text, greetings, or explanations.\n"
-            "2. Ensure you implement the exact function signatures requested in the blueprint.\n"
-            "3. Include necessary imports.\n"
-            "4. Write clean, production-ready code with basic docstrings.\n"
-            "5. NEVER use interactive `input()` at the module root level. If you must use `input()`, wrap it in a function, "
-            "and NEVER execute that function at the bottom of the file unless wrapped in `if __name__ == '__main__':`."
+            "You are the DEAN-OS Lead Python Developer. "
+            "You must output YOUR ENTIRE RESPONSE as a valid JSON object matching the requested schema. "
+            "1. Implement the exact function signatures requested.\n"
+            "2. Include necessary imports.\n"
+            "3. Write clean, production-ready code with basic docstrings.\n"
+            "4. NEVER use interactive `input()` at the module root level."
         )
 
         user_prompt = (
@@ -42,33 +39,36 @@ class MainCoder:
             f"Required Signatures: {target_file.get('signatures')}\n"
         )
 
-        # [FIX] Inject the error logs directly into the AI's context if it failed previously
         if feedback:
             print(f"[CODER] ⚠️ Processing feedback from previous failure...")
-            user_prompt += f"\n\nCRITICAL ERROR FEEDBACK:\nYour previous attempt failed with the following errors:\n{feedback}\n\nRewrite the file to fix these errors.\n"
+            user_prompt += f"\n\nCRITICAL ERROR FEEDBACK:\nYour previous attempt failed with the following errors:\n{feedback}\n\nFix these errors in the new code.\n"
 
-        user_prompt += "\nBEGIN RAW PYTHON CODE:"
-
-        # ... (keep the rest of the try/except block exactly the same) ...
         try:
+            # format=code_schema forces Ollama to strictly adhere to the FSM
             response = ollama.generate(
                 model=self.model_name,
                 system=system_prompt,
-                prompt=user_prompt
+                prompt=user_prompt,
+                format=code_schema
             )
 
+            # We no longer need regex! The FSM guarantees valid JSON.
+            result_json = json.loads(response['response'])
+            raw_code = result_json.get("code", "")
 
-            # Clean the output just in case the model ignores the markdown rule
-            raw_code = self._strip_markdown(response['response'])
-
-            # Write the file to the workspace
             file_path = os.path.join(self.workspace_dir, filename)
+            # [FIX] Automatically create parent directories if the Architect dictates a folder structure
+            os.makedirs(os.path.dirname(file_path), exist_ok=True)
+
             with open(file_path, "w", encoding="utf-8") as f:
                 f.write(raw_code)
 
             print(f"[CODER SUCCESS] Saved {filename} to workspace.")
             return file_path
 
+        except json.JSONDecodeError as e:
+            print(f"[CODER ERROR] FSM Violation - Invalid JSON returned: {e}")
+            return None
         except Exception as e:
             print(f"[CODER ERROR] Failed to write module {filename}: {e}")
             return None

@@ -22,6 +22,9 @@ class Deployer:
             return None
 
         try:
+            # [FIX] Ensure production subdirectories exist before copying
+            os.makedirs(os.path.dirname(target_path), exist_ok=True)
+
             # We use copy2 to preserve the original file metadata (creation times, etc.)
             shutil.copy2(source_path, target_path)
             print(f"[DEPLOYER SUCCESS] '{filename}' is now live in production.")
