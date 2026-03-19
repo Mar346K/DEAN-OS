@@ -17,7 +17,8 @@ class MainCoder:
         text = re.sub(r"```$", "", text, flags=re.MULTILINE)
         return text.strip()
 
-    def write_module(self, project_blueprint: dict, target_file: dict) -> str:
+    # [FIX] Added 'feedback' parameter for the self-healing loop
+    def write_module(self, project_blueprint: dict, target_file: dict, feedback: str = None) -> str:
         filename = target_file.get("filename")
         print(f"[CODER] Writing implementation for: {filename}...")
 
@@ -29,23 +30,33 @@ class MainCoder:
             "Do not include conversational text, greetings, or explanations.\n"
             "2. Ensure you implement the exact function signatures requested in the blueprint.\n"
             "3. Include necessary imports.\n"
-            "4. Write clean, production-ready code with basic docstrings."
+            "4. Write clean, production-ready code with basic docstrings.\n"
+            "5. NEVER use interactive `input()` at the module root level. If you must use `input()`, wrap it in a function, "
+            "and NEVER execute that function at the bottom of the file unless wrapped in `if __name__ == '__main__':`."
         )
 
         user_prompt = (
             f"PROJECT BLUEPRINT:\n{project_blueprint}\n\n"
             f"YOUR TASK:\nWrite the complete implementation for the file: {filename}\n"
             f"Purpose: {target_file.get('purpose')}\n"
-            f"Required Signatures: {target_file.get('signatures')}\n\n"
-            "BEGIN RAW PYTHON CODE:"
+            f"Required Signatures: {target_file.get('signatures')}\n"
         )
 
+        # [FIX] Inject the error logs directly into the AI's context if it failed previously
+        if feedback:
+            print(f"[CODER] ⚠️ Processing feedback from previous failure...")
+            user_prompt += f"\n\nCRITICAL ERROR FEEDBACK:\nYour previous attempt failed with the following errors:\n{feedback}\n\nRewrite the file to fix these errors.\n"
+
+        user_prompt += "\nBEGIN RAW PYTHON CODE:"
+
+        # ... (keep the rest of the try/except block exactly the same) ...
         try:
             response = ollama.generate(
                 model=self.model_name,
                 system=system_prompt,
                 prompt=user_prompt
             )
+
 
             # Clean the output just in case the model ignores the markdown rule
             raw_code = self._strip_markdown(response['response'])

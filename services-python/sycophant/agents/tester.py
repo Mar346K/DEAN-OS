@@ -15,7 +15,8 @@ class Tester:
         text = re.sub(r"```$", "", text, flags=re.MULTILINE)
         return text.strip()
 
-    def write_tests(self, filename: str) -> str:
+    # [FIX] Added 'feedback' parameter
+    def write_tests(self, filename: str, feedback: str = None) -> str:
         print(f"[TESTER] Generating adversarial tests for: {filename}...")
         file_path = os.path.join(self.workspace_dir, filename)
 
@@ -23,7 +24,6 @@ class Tester:
             print(f"[TESTER ERROR] Source file {filename} not found in workspace.")
             return None
 
-        # Read the code the Main Coder just wrote
         with open(file_path, "r", encoding="utf-8") as f:
             source_code = f.read()
 
@@ -32,22 +32,29 @@ class Tester:
             "adversarial pytest test cases for the provided Python module.\n\n"
             "CRITICAL RULES:\n"
             "1. Output ONLY the raw Python code. No markdown formatting, no conversational text.\n"
-            "2. Use the standard 'pytest' framework. Use 'tmp_path' or 'monkeypatch' fixtures if file IO is needed.\n"
+            "2. Use the standard 'pytest' framework. If testing file IO, use the 'tmp_path' fixture. "
+            "If the target module uses `input()`, you MUST mock it using `@patch('builtins.input')`.\n"
             "3. Include happy path and edge case validations.\n"
             "4. Ensure your import statements match the target module."
         )
 
-        # Strip the .py to give the agent the clean module name for importing
         module_name = filename.replace('.py', '')
 
         user_prompt = (
             f"TARGET MODULE: {module_name}\n\n"
             f"SOURCE CODE TO TEST:\n{source_code}\n\n"
             f"Write a comprehensive pytest suite for this code. Import it using `import {module_name}` "
-            f"or `from {module_name} import ...`.\n\n"
-            "BEGIN RAW PYTHON CODE:"
+            f"or `from {module_name} import ...`.\n"
         )
 
+        # [FIX] Inject QA feedback if the tests themselves contained syntax errors
+        if feedback:
+            print(f"[TESTER] ⚠️ Processing feedback from previous failure...")
+            user_prompt += f"\n\nCRITICAL ERROR FEEDBACK:\nYour previous test suite failed with the following errors:\n{feedback}\n\nRewrite the test suite to fix these errors. REMEMBER: No conversational text!\n"
+
+        user_prompt += "\nBEGIN RAW PYTHON CODE:"
+
+        # ... (keep the rest of the try/except block exactly the same) ...
         try:
             response = ollama.generate(
                 model=self.model_name,
