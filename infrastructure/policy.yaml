@@ -1,0 +1,36 @@
+# DEAN-OS Agentic Access Control Policy (v1.0)
+# Enforced by Valkyrie
+
+roles:
+  # The Brain: Only allowed to read intents and write blueprints to memory.
+  architect:
+    scopes:
+      - "memory:read"
+      - "memory:write"
+
+  # The Hands: Allowed to write to the staging area, but CANNOT execute code.
+  coder:
+    scopes:
+      - "staging:write"
+      - "memory:read"
+
+  # The QA: Allowed to write tests to staging, but CANNOT execute code.
+  tester:
+    scopes:
+      - "staging:write"
+      - "memory:read"
+
+  # The Judge: The ONLY agent allowed to trigger the Oubliette Sandbox.
+  analyzer:
+    scopes:
+      - "sandbox:execute"
+
+  # The CI/CD Pipeline: The ONLY agent allowed to touch the production workspace.
+  deployer:
+    scopes:
+      - "production:write"
+      - "staging:read"
+
+# System-level overrides
+admins:
+  - "sycophant-orchestrator"
