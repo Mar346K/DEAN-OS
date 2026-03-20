@@ -1,18 +1,18 @@
-import ollama
 import os
 import json
 import sys
 
-# Wire up the path so we can access the tools directory
+# Wire up paths to our new domain folders
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from tools.ast_mapper import ProjectMapper
+from routing.gateway import InferenceGateway
 
 class Tester:
-    def __init__(self, model_name="llama3.1:latest"):
-        self.model_name = model_name
+    def __init__(self):
         self.workspace_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../staging/workspace"))
+        self.gateway = InferenceGateway()
 
-    def write_tests(self, filename: str, feedback: str = None) -> str:
+    def write_tests(self, filename: str, feedback: str = None, attempt: int = 1) -> str:
         print(f"[TESTER] Generating adversarial tests for: {filename}...")
         file_path = os.path.join(self.workspace_dir, filename)
 
@@ -23,7 +23,7 @@ class Tester:
         with open(file_path, "r", encoding="utf-8") as f:
             source_code = f.read()
 
-        # [PHASE 14] Generate the live AST Map of the workspace
+        # [PHASE 14] Generate the live AST Map
         mapper = ProjectMapper(self.workspace_dir)
         ast_map = mapper.generate_map()
 
@@ -62,11 +62,12 @@ class Tester:
             user_prompt += f"\n\nCRITICAL ERROR FEEDBACK:\nYour previous test suite failed with the following errors:\n{feedback}\n\nRewrite the test suite to fix these errors.\n"
 
         try:
-            response = ollama.generate(
-                model=self.model_name,
+            # [PHASE 14.2] Route through the Smart-Tier Gateway
+            response = self.gateway.generate(
                 system=system_prompt,
                 prompt=user_prompt,
-                format=test_schema
+                format_schema=test_schema,
+                attempt=attempt
             )
 
             result_json = json.loads(response['response'])

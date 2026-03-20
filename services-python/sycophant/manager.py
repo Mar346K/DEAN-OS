@@ -49,7 +49,11 @@ class AssemblyLine:
                     print(f"\n[MANAGER] 🔄 Initiating Self-Healing Loop (Attempt {attempt}/{MAX_RETRIES}) for {filename}...")
 
                 # 1. Write the Code (Injecting feedback if this is a retry)
-                source_path = self.coder.write_module(blueprint, file_spec, feedback=feedback)
+                # Pass the 'attempt' integer so the Gateway can decide to escalate
+                source_path = self.coder.write_module(blueprint, file_spec, feedback=feedback, attempt=attempt)
+
+                # Do the same for the tester around line 52
+                test_path = self.tester.write_tests(filename, feedback=feedback, attempt=attempt)
                 if not source_path:
                     print(f"[MANAGER] Skipping {filename} due to Coder failure.")
                     break
