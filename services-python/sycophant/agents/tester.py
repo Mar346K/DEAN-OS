@@ -44,9 +44,12 @@ class Tester:
             "1. Use the standard 'pytest' framework.\n"
             "2. If testing file IO, use the 'tmp_path' fixture.\n"
             "3. If the target uses `input()`, mock it using `@patch('builtins.input')`.\n"
-            "4. Include happy path and edge case validations."
+            "4. Include happy path and edge case validations.\n\n"
+            "EXAMPLE OUTPUT FORMAT:\n"
+            "{\n"
+            '  "code": "import pytest\\n\\ndef test_example():\\n    assert True\\n"\n'
+            "}"
         )
-
         module_name = filename.replace('.py', '')
 
         user_prompt = (
@@ -72,6 +75,19 @@ class Tester:
 
             result_json = json.loads(response['response'])
             raw_code = result_json.get("code", "")
+
+            # --- DEAN-OS Precision Scrubber ---
+            raw_code = raw_code.strip()
+            if raw_code.startswith("```python"):
+                raw_code = raw_code[9:]
+            elif raw_code.startswith("```"):
+                raw_code = raw_code[3:]
+
+            if raw_code.endswith("```"):
+                raw_code = raw_code[:-3]
+
+            raw_code = raw_code.strip()
+            # ---------------------------------
 
             dirname = os.path.dirname(filename)
             basename = os.path.basename(filename)

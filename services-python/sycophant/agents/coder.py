@@ -37,7 +37,11 @@ class MainCoder:
             "1. Implement the exact function signatures requested.\n"
             "2. Include necessary imports.\n"
             "3. Write clean, production-ready code with basic docstrings.\n"
-            "4. NEVER use interactive `input()` at the module root level."
+            "4. NEVER use interactive `input()` at the module root level.\n\n"
+            "EXAMPLE OUTPUT FORMAT:\n"
+            "{\n"
+            '  "code": "import math\\n\\ndef calculate_area(radius):\\n    return math.pi * (radius ** 2)\\n"\n'
+            "}"
         )
 
         user_prompt = (
@@ -63,6 +67,19 @@ class MainCoder:
 
             result_json = json.loads(response['response'])
             raw_code = result_json.get("code", "")
+
+            # --- DEAN-OS Precision Scrubber ---
+            raw_code = raw_code.strip()
+            if raw_code.startswith("```python"):
+                raw_code = raw_code[9:]
+            elif raw_code.startswith("```"):
+                raw_code = raw_code[3:]
+
+            if raw_code.endswith("```"):
+                raw_code = raw_code[:-3]
+
+            raw_code = raw_code.strip()
+            # ---------------------------------
 
             file_path = os.path.join(self.workspace_dir, filename)
             os.makedirs(os.path.dirname(file_path), exist_ok=True)

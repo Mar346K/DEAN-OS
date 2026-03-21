@@ -1,6 +1,5 @@
 import sys
 import os
-import json
 
 # Ensure we can import our agents
 sys.path.append(os.path.dirname(__file__))
@@ -10,6 +9,7 @@ from agents.coder import MainCoder
 from agents.tester import Tester
 from agents.analyzer import Analyzer
 from agents.deployer import Deployer
+from telemetry.tracer import TelemetryEngine
 
 # [PHASE 11] The Self-Healing limit
 MAX_RETRIES = 3
@@ -17,6 +17,7 @@ MAX_RETRIES = 3
 class AssemblyLine:
     def __init__(self):
         print("[MANAGER] Booting DEAN-OS Assembly Line...")
+        self.tracer = TelemetryEngine()
         self.architect = Architect()
         self.coder = MainCoder()
         self.tester = Tester()
@@ -27,7 +28,9 @@ class AssemblyLine:
         print(f"\n[MANAGER] Processing User Intent: '{intent}'")
 
         # --- Phase 1: Architecture ---
-        blueprint = self.architect.draft_plan(user_intent=intent)
+        with self.tracer.span("Architect", f"Drafting blueprint for intent: '{intent}'"):
+            blueprint = self.architect.draft_plan(user_intent=intent)
+
         if not blueprint:
             print("[MANAGER ERROR] Architect failed to produce a valid blueprint. Halting.")
             return
@@ -43,39 +46,43 @@ class AssemblyLine:
             feedback = None
             success = False
 
-            # [PHASE 11 UPGRADE] The Recursive Debugging Loop
             for attempt in range(1, MAX_RETRIES + 1):
                 if attempt > 1:
                     print(f"\n[MANAGER] 🔄 Initiating Self-Healing Loop (Attempt {attempt}/{MAX_RETRIES}) for {filename}...")
 
-                # 1. Write the Code (Injecting feedback if this is a retry)
-                # Pass the 'attempt' integer so the Gateway can decide to escalate
-                source_path = self.coder.write_module(blueprint, file_spec, feedback=feedback, attempt=attempt)
+                # 1. Write the Code
+                with self.tracer.span("Coder", f"Writing implementation for {filename} (Attempt {attempt})"):
+                    self.tracer.record_hop("Manager", "Coder")
+                    source_path = self.coder.write_module(blueprint, file_spec, feedback=feedback, attempt=attempt)
 
-                # Do the same for the tester around line 52
-                test_path = self.tester.write_tests(filename, feedback=feedback, attempt=attempt)
                 if not source_path:
                     print(f"[MANAGER] Skipping {filename} due to Coder failure.")
                     break
 
-                # 2. Write the Tests (Injecting feedback if this is a retry)
-                test_path = self.tester.write_tests(filename, feedback=feedback)
+                # 2. Write the Tests
+                with self.tracer.span("Tester", f"Generating adversarial tests for {filename} (Attempt {attempt})"):
+                    self.tracer.record_hop("Manager", "Tester")
+                    test_path = self.tester.write_tests(filename, feedback=feedback, attempt=attempt)
+
                 if not test_path:
                     print(f"[MANAGER] Skipping QA for {filename} due to Tester failure.")
                     break
 
                 # 3. Execute QA in the Sandbox
                 test_filename = f"test_{filename}"
-                report = self.analyzer.evaluate_code(test_filename)
+                with self.tracer.span("Analyzer", f"Evaluating {test_filename} in Oubliette"):
+                    self.tracer.record_hop("Manager", "Analyzer")
+                    report = self.analyzer.evaluate_code(test_filename)
 
                 # 4. Evaluate and Route
                 if report.get("status") == "pass":
-                    self.deployer.deploy_module(filename)
-                    success = True
-                    break  # Escape the retry loop! The file is perfect.
+                    with self.tracer.span("Deployer", f"Migrating {filename} to production"):
+                        self.tracer.record_hop("Manager", "Deployer")
+                        self.deployer.deploy_module(filename)
+                        success = True
+                    break  # Escape the retry loop!
                 else:
                     print(f"[MANAGER ⚠️] QA Failed on Attempt {attempt}.")
-                    # Capture the raw tracebacks to feed back into the AI on the next loop
                     feedback = report.get("logs", "Unknown error occurred.")
 
             # If we exhausted all 3 retries and it still failed
@@ -86,8 +93,12 @@ class AssemblyLine:
         print("\n[MANAGER] Assembly Line run complete. Check 'workspace/' for production-ready files.")
 
 if __name__ == "__main__":
-    manager = AssemblyLine()
+    try:
+        manager = AssemblyLine()
 
-    # The Ultimate Test
-    prompt = "Build a modular terminal Blackjack game with CSV save states for player bankrolls."
-    manager.build_project(intent=prompt)
+        # The Ultimate Test
+        prompt = "Build a modular terminal Blackjack game with CSV save states for player bankrolls."
+        manager.build_project(intent=prompt)
+    except KeyboardInterrupt:
+        print("\n\n[MANAGER 🛑] System execution halted by user (Ctrl+C). Shutting down Assembly Line.")
+        sys.exit(0)
