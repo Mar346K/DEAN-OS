@@ -31,8 +31,9 @@ sys.exit(0)
         payload = {"code": run_script}
 
         try:
-            # [SECURITY FIX] Added timeout=60 to satisfy Bandit and prevent deadlocks
-            resp = requests.post(f"{self.sandbox_url}/run", json=payload, headers=headers, timeout=60)
+            # --- PHASE 16: The 5-Second Circuit Breaker ---
+            # Lowered from 60 to 5.0 to instantly sever infinite loops
+            resp = requests.post(f"{self.sandbox_url}/run", json=payload, headers=headers, timeout=5.0)
 
             # [FIX] Catch hard server crashes before trying to parse JSON
             if resp.status_code != 200:
@@ -60,6 +61,12 @@ sys.exit(0)
 
             print("\n[ANALYZER] ✅ PASSED: All tests green. Code is mathematically verified.")
             return {"status": "pass", "logs": output}
+
+        # --- PHASE 16: Infinite Loop Handler ---
+        except requests.exceptions.Timeout:
+            print("\n[ANALYZER 🛑] CIRCUIT BREAKER TRIPPED: Execution timed out. Possible infinite loop detected.")
+            return {"status": "fail", "type": "loud", "logs": "CRITICAL ERROR: Execution timed out after 5 seconds. You likely wrote an infinite loop. Fix your loop conditions."}
+        # ---------------------------------------
 
         except Exception as e:
             print(f"[ANALYZER ERROR] Sandbox communication failed: {e}")
