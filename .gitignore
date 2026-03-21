@@ -23,3 +23,6 @@ storage/
 
 # AI Generated Workspace
 staging/
+
+staging/workspace/
+workspace/

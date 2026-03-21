@@ -10,6 +10,7 @@ from agents.tester import Tester
 from agents.analyzer import Analyzer
 from agents.deployer import Deployer
 from telemetry.tracer import TelemetryEngine
+from telemetry.watchdog import SystemWatchdog
 
 # [PHASE 11] The Self-Healing limit
 MAX_RETRIES = 3
@@ -94,6 +95,11 @@ class AssemblyLine:
 
 if __name__ == "__main__":
     try:
+        # --- PHASE 16: Pre-flight Check ---
+        guard = SystemWatchdog()
+        guard.run_preflight_check()
+        # ----------------------------------
+
         manager = AssemblyLine()
 
         # The Ultimate Test
