@@ -2,6 +2,7 @@ import ollama
 import sys
 import time
 import threading
+import valkyrie_crypto
 
 class InferenceGateway:
     def __init__(self):
@@ -61,6 +62,27 @@ class InferenceGateway:
 
             # Reset terminal color back to normal
             sys.stdout.write("\033[0m\n")
+
+            # --- PHASE 16.2: FinOps Circuit Breaker ---
+            # We only charge for the heavy Tier-2 model. Tier-1 (Local 8B) is free.
+            if attempt >= 3:
+                # Rough token estimation (chars / 4) for local tracking
+                estimated_tokens = (len(prompt) + len(full_response)) // 4
+
+                # Cloud pricing simulation (e.g., $0.015 per 1k tokens)
+                cost_per_1k = 0.015
+
+                # Ping the Rust Governor to check the ledger
+                approved = valkyrie_crypto.enforce_finops(
+                    "session-main-thread", # In a web environment, pass the real trace_id here
+                    estimated_tokens,
+                    cost_per_1k
+                )
+
+                if not approved:
+                    print("\n[GATEWAY 🛑] VALKYRIE INTERCEPT: Financial budget exceeded. Halting swarm.")
+                    sys.exit(1) # Violently drop the execution to save money
+            # ------------------------------------------
 
             print(f"[GATEWAY] ✅ Generation complete ({len(full_response)} chars).")
             return {'response': full_response}

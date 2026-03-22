@@ -4,7 +4,7 @@ import os
 # Point Python to the sycophant service so it can find the agents folder
 sys.path.append(os.path.abspath("services-python/sycophant"))
 
-from agents.tester import Tester
+from agents.tester import Tester as TesterAgent
 
 def run_test():
     tester = Tester(model_name="llama3.1:latest")

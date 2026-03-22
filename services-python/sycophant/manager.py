@@ -46,10 +46,12 @@ class AssemblyLine:
 
             feedback = None
             success = False
+            attempt = 1
+            dynamic_max_retries = MAX_RETRIES
 
-            for attempt in range(1, MAX_RETRIES + 1):
+            while attempt <= dynamic_max_retries:
                 if attempt > 1:
-                    print(f"\n[MANAGER] 🔄 Initiating Self-Healing Loop (Attempt {attempt}/{MAX_RETRIES}) for {filename}...")
+                    print(f"\n[MANAGER] 🔄 Initiating Self-Healing Loop (Attempt {attempt}/{dynamic_max_retries}) for {filename}...")
 
                 # 1. Write the Code
                 with self.tracer.span("Coder", f"Writing implementation for {filename} (Attempt {attempt})"):
@@ -86,9 +88,39 @@ class AssemblyLine:
                     print(f"[MANAGER ⚠️] QA Failed on Attempt {attempt}.")
                     feedback = report.get("logs", "Unknown error occurred.")
 
-            # If we exhausted all 3 retries and it still failed
+                    # --- PHASE 16: HITL Checkpoint Interceptor ---
+                    if attempt == dynamic_max_retries:
+                        print(f"\n[MANAGER 🛑] Sandbox execution failed {dynamic_max_retries} times.")
+                        print(f"--- FAULT TRACEBACK ---\n{feedback}\n-----------------------")
+
+                        # Serialize state to disk (Hard checkpoint)
+                        checkpoint_data = {
+                            "intent": intent,
+                            "filename": filename,
+                            "attempt": attempt,
+                            "traceback": feedback
+                        }
+                        checkpoint_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../staging/checkpoint.json"))
+                        with open(checkpoint_path, "w") as f:
+                            import json
+                            json.dump(checkpoint_data, f, indent=4)
+
+                        # Await Human Guidance
+                        print(f"\n[SYSTEM CHECKPOINT SAVED TO {checkpoint_path}]")
+                        human_hint = input("[DEAN-OS HITL] Provide a hint to fix this (or press Enter to Quarantine): ")
+
+                        if human_hint.strip():
+                            print("\n[MANAGER] Human guidance received. Rebooting Assembly Line for this module...")
+                            feedback += f"\n\n[HUMAN OPERATOR GUIDANCE]: {human_hint}"
+                            dynamic_max_retries += 1  # Grant the AI one more attempt using the Tier-2 model
+                        else:
+                            print("\n[MANAGER] No human guidance provided. Proceeding to Quarantine.")
+
+                attempt += 1
+
+            # If we exhausted all retries and it still failed
             if not success:
-                print(f"\n[MANAGER 🛑] QUARANTINE: {filename} failed QA after {MAX_RETRIES} attempts.")
+                print(f"\n[MANAGER 🛑] QUARANTINE: {filename} failed QA after {dynamic_max_retries} attempts.")
                 print("It has been left in 'staging/workspace/' for human review. It will NOT be deployed.")
 
         print("\n[MANAGER] Assembly Line run complete. Check 'workspace/' for production-ready files.")
