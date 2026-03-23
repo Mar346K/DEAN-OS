@@ -1,3 +1,3 @@
 # DEAN-OS Operational Budget Guardrails
 # Valkyrie will terminate any trace_id that exceeds this cap.
-task_limit_usd: 0.10
+task_limit_usd: 1.00

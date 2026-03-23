@@ -1,4 +1,4 @@
-﻿import os
+import os
 import docker
 from fastapi import FastAPI, HTTPException, Depends, Header
 from pydantic import BaseModel

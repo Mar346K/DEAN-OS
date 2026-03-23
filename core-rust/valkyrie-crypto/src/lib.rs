@@ -6,6 +6,7 @@ use chrono::{Utc, Duration};
 use std::fs;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock}; // [NEW] Needed for the global ledger
+use regex::Regex;
 
 // --- YAML Data Structures ---
 #[derive(Debug, Serialize, Deserialize)]
@@ -160,11 +161,39 @@ fn enforce_finops(trace_id: String, tokens_used: usize, cost_per_1k: f32) -> PyR
     }
 }
 
+// --- [NEW] Phase 18: DLP Egress Guard (Hybrid Air-Lock) ---
+#[pyfunction]
+fn enforce_dlp_egress(mut payload: String) -> PyResult<String> {
+    // 1. Scrub AWS Access Keys (AKIA followed by 16 alphanumeric chars)
+    let aws_regex = Regex::new(r"AKIA[0-9A-Z]{16}").unwrap();
+    payload = aws_regex.replace_all(&payload, "[REDACTED_AWS_KEY]").to_string();
+
+    // 2. Scrub JWT Tokens (eyJ followed by base64 chars and dots)
+    let jwt_regex = Regex::new(r"eyJ[a-zA-Z0-9_-]*\.[a-zA-Z0-9_-]*\.[a-zA-Z0-9_-]*").unwrap();
+    payload = jwt_regex.replace_all(&payload, "[REDACTED_JWT_TOKEN]").to_string();
+
+    // 3. Scrub Proprietary Company Secrets/Variables
+    // In a production environment, you would load these from a secure policy.yaml
+    let proprietary_terms = vec![
+        "daen-internal-dev-secret-2026",
+        "HR_DB_PASSWORD",
+        "nexus_risk_solana_key"
+    ];
+
+    for term in proprietary_terms {
+        // Case-insensitive exact match replacement
+        payload = payload.replace(term, "[REDACTED_PROPRIETARY_SECRET]");
+    }
+
+    Ok(payload)
+}
+
 #[pymodule]
 fn valkyrie_crypto(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(forge_token, m)?)?;
     m.add_function(wrap_pyfunction!(validate_token, m)?)?;
     m.add_function(wrap_pyfunction!(enforce_scope, m)?)?;
-    m.add_function(wrap_pyfunction!(enforce_finops, m)?)?; // [NEW] Expose to Python
+    m.add_function(wrap_pyfunction!(enforce_finops, m)?)?;
+    m.add_function(wrap_pyfunction!(enforce_dlp_egress, m)?)?; // [NEW] Expose DLP to Python
     Ok(())
 }

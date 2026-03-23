@@ -1,28 +1,33 @@
+import pytest
+from fastapi.testclient import TestClient
 import valkyrie_crypto
-import requests # nosec B404
+import sys
+import os
 
-SECRET = "daen-internal-dev-secret-2026"
-URL = "http://127.0.0.1:8002/run"
+# Wire up the path so we can import the Oubliette app directly
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../services-python/oubliette')))
+from app import app, INTERNAL_SECRET
+
+client = TestClient(app)
+
+def test_run_code_unauthorized():
+    """Zero-Trust: Ensure missing token fails."""
+    response = client.post("/run", json={"code": "print('hello')"})
+    assert response.status_code == 401
 
 def test_sandbox_isolation():
-    print("--- OUBLIETTE ISOLATION TEST ---")
-
-    token = valkyrie_crypto.forge_token("test-agent", "admin", SECRET)
+    """Ensure the sandbox executes code safely using the correct JSON payload."""
+    token = valkyrie_crypto.forge_token("test-agent", "admin", INTERNAL_SECRET)
     headers = {"Authorization": f"Bearer {token}"}
 
-    # This code tries to list files on YOUR computer.
-    # It should only see the empty /home/agentuser inside Docker.
+    # This tries to look at the current directory.
     malicious_code = "import os; print(os.listdir('.'))"
 
-    print(f"[TEST] Attempting to peek at host files...")
-    response = requests.post(URL, params={"code": malicious_code}, headers=headers)
+    response = client.post("/run", json={"code": malicious_code}, headers=headers)
 
-    if response.status_code == 200:
-        output = response.json().get("output")
-        print(f"[RESULT] Sandbox output: {output}")
-        print("[SUCCESS] Agent is trapped. Host files are invisible.")
-    else:
-        print(f"[FAILED] Error: {response.text}")
+    assert response.status_code == 200
+    data = response.json()
+    assert "output" in data
 
-if __name__ == "__main__":
-    test_sandbox_isolation()
+    # We want to ensure it doesn't see DEAN-OS host files (like daenctl.py)
+    assert "daenctl.py" not in data["output"]
