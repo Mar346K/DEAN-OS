@@ -140,9 +140,24 @@ async def execute_assembly_line(prompt: str):
         report = await asyncio.to_thread(analyzer.evaluate_code, test_filename)
 
         if report.get("status") == "pass":
+            # --- PHASE 22: THE DEPLOYER ---
+            await manager.broadcast({"type": "agent_trace", "payload": {"trace_id": "DEP-001", "agent": "Deployer", "action": f"Migrating {filename} to production workspace...", "status": "running"}})
+            deployer = Deployer()
+            prod_path = await asyncio.to_thread(deployer.deploy_module, filename)
+
             await manager.broadcast({
                 "type": "agent_trace",
-                "payload": {"trace_id": "SYS-002", "agent": "Manager", "action": "Assembly Line Complete. Code is Verified and Green.", "status": "running"}
+                "payload": {"trace_id": "SYS-002", "agent": "Manager", "action": f"Assembly Line Complete. {filename} is live in Production.", "status": "running"}
+            })
+
+            # --- PHASE 23: LIVE CARTOGRAPHY ---
+            # Update the React UI graph with the newly deployed file
+            await manager.broadcast({
+                "type": "ast_map",
+                "payload": {
+                    "nodes": [{"id": filename, "group": "python", "churn_score": 0}], # Fresh code has 0 scar tissue!
+                    "edges": []
+                }
             })
             break
         else:
@@ -200,10 +215,25 @@ async def execute_recovery_line(filename: str, hint: str, error_log: str):
     report = await asyncio.to_thread(analyzer.evaluate_code, test_filename)
 
     if report.get("status") == "pass":
-        await manager.broadcast({
-            "type": "agent_trace",
-            "payload": {"trace_id": "SYS-REC", "agent": "Manager", "action": "Recovery Successful. Code is Green.", "status": "running"}
-        })
+            # --- PHASE 22: THE DEPLOYER ---
+            await manager.broadcast({"type": "agent_trace", "payload": {"trace_id": "DEP-001", "agent": "Deployer", "action": f"Migrating {filename} to production workspace...", "status": "running"}})
+            deployer = Deployer()
+            prod_path = await asyncio.to_thread(deployer.deploy_module, filename)
+
+            await manager.broadcast({
+                "type": "agent_trace",
+                "payload": {"trace_id": "SYS-002", "agent": "Manager", "action": f"Assembly Line Complete. {filename} is live in Production.", "status": "running"}
+            })
+
+            # --- PHASE 23: LIVE CARTOGRAPHY ---
+            # Update the React UI graph with the newly deployed file
+            await manager.broadcast({
+                "type": "ast_map",
+                "payload": {
+                    "nodes": [{"id": filename, "group": "python", "churn_score": 0}], # Fresh code has 0 scar tissue!
+                    "edges": []
+                }
+            })
     else:
         await manager.broadcast({
             "type": "hitl_alert",
@@ -223,6 +253,17 @@ async def start_build(intent: dict, background_tasks: BackgroundTasks):
     # Hand the heavy lifting off to a background thread so the API stays responsive
     background_tasks.add_task(execute_assembly_line, prompt)
     return {"status": "Assembly Line Queued"}
+
+# --- THE HITL TRIGGER ---
+@app.post("/hitl/resolve")
+async def resolve_hitl(intent: dict, background_tasks: BackgroundTasks):
+    filename = intent.get("filename")
+    hint = intent.get("hint")
+    error_log = intent.get("error_traceback")
+
+    # Hand the recovery line off to the background thread
+    background_tasks.add_task(execute_recovery_line, filename, hint, error_log)
+    return {"status": "Recovery Swarm Deployed"}
 
 if __name__ == "__main__":
     import uvicorn
