@@ -95,17 +95,17 @@ async def execute_assembly_line(prompt: str):
     # 1. The Architect
     await manager.broadcast({"type": "agent_trace", "payload": {"trace_id": "ARCH-001", "agent": "Architect", "action": "Designing system blueprints...", "status": "running"}})
     architect = Architect()
-    plan = architect.draft_plan(user_intent=prompt)
+
+    # [FIX]: Offload blocking LLM call to a background thread!
+    plan = await asyncio.to_thread(architect.draft_plan, prompt)
 
     if not plan or 'files' not in plan or len(plan['files']) == 0:
         await manager.broadcast({"type": "agent_trace", "payload": {"trace_id": "SYS-ERR", "agent": "System", "action": "Architect failed to generate blueprint.", "status": "error"}})
         return
 
-    # Grab the first file from the blueprint to pass down the assembly line
     target_file = plan['files'][0]
     filename = target_file['filename']
 
-    # Update UI Graph
     await manager.broadcast({
         "type": "ast_map",
         "payload": {
@@ -120,32 +120,30 @@ async def execute_assembly_line(prompt: str):
     feedback = None
 
     while attempt <= MAX_RETRIES:
-        # 2. The Coder
         action_msg = f"Writing implementation for {filename}..." if attempt == 1 else f"Fixing errors in {filename} (Attempt {attempt})..."
         await manager.broadcast({"type": "agent_trace", "payload": {"trace_id": f"CODE-00{attempt}", "agent": "Coder", "action": action_msg, "status": "running"}})
 
         coder = MainCoder()
-        file_path = coder.write_module(project_blueprint=plan, target_file=target_file, feedback=feedback, attempt=attempt)
+        # [FIX]: Threading
+        file_path = await asyncio.to_thread(coder.write_module, plan, target_file, feedback, attempt)
 
-        # 3. The Tester
         await manager.broadcast({"type": "agent_trace", "payload": {"trace_id": f"TEST-00{attempt}", "agent": "Tester", "action": f"Writing adversarial tests (Attempt {attempt})...", "status": "running"}})
         tester = Tester()
-        test_file_path = tester.write_tests(filename=filename, feedback=feedback, attempt=attempt)
+        # [FIX]: Threading
+        test_file_path = await asyncio.to_thread(tester.write_tests, filename, feedback, attempt)
 
-        # 4. The Analyzer (Sandbox Execution)
         await manager.broadcast({"type": "agent_trace", "payload": {"trace_id": f"ANAL-00{attempt}", "agent": "Analyzer", "action": "Evaluating in Oubliette Sandbox...", "status": "running"}})
         analyzer = Analyzer()
 
         test_filename = os.path.basename(test_file_path) if test_file_path else f"test_{filename}"
-        report = analyzer.evaluate_code(test_filename=test_filename)
+        # [FIX]: Threading
+        report = await asyncio.to_thread(analyzer.evaluate_code, test_filename)
 
         if report.get("status") == "pass":
             await manager.broadcast({
                 "type": "agent_trace",
                 "payload": {"trace_id": "SYS-002", "agent": "Manager", "action": "Assembly Line Complete. Code is Verified and Green.", "status": "running"}
             })
-
-            # [Optional Phase 21: Trigger Deployer here]
             break
         else:
             feedback = report.get("logs", "Unknown Execution Error")
@@ -162,16 +160,59 @@ async def execute_assembly_line(prompt: str):
             "payload": {"trace_id": "SYS-003", "agent": "Manager", "action": "MAX RETRIES EXCEEDED. Escalating to Human-in-the-Loop.", "status": "error"}
         })
 
-        # Trigger the neon magenta HITL Modal on the React UI!
         await manager.broadcast({
             "type": "hitl_alert",
             "payload": {
                 "trace_id": "SYS-001",
                 "filename": filename,
                 "attempt": MAX_RETRIES,
-                # Send the last 500 characters of the error log so the UI doesn't overflow
                 "error_traceback": feedback[-500:] if feedback else "Unknown systemic failure.",
                 "action_required": "Provide a hint to fix this or press Quarantine."
+            }
+        })
+
+# --- THE NEURAL OVERRIDE (HITL RECOVERY) ---
+async def execute_recovery_line(filename: str, hint: str, error_log: str):
+    """A specialized swarm that injects human feedback directly into the Coder."""
+    await manager.broadcast({
+        "type": "agent_trace",
+        "payload": {"trace_id": "SYS-HITL", "agent": "Manager", "action": f"Neural Override Accepted for {filename}. Re-engaging Swarm...", "status": "running"}
+    })
+
+    plan = {"project_name": "Recovery_Protocol", "files": [{"filename": filename, "purpose": "Apply human fix", "signatures": []}]}
+    target_file = plan["files"][0]
+    feedback_payload = f"PREVIOUS ERROR:\n{error_log}\n\nLEAD ENGINEER OVERRIDE (CRITICAL HINT):\n{hint}"
+
+    await manager.broadcast({"type": "agent_trace", "payload": {"trace_id": "CODE-REC", "agent": "Coder", "action": "Applying human fix...", "status": "running"}})
+    coder = MainCoder()
+    # [FIX]: Threading
+    file_path = await asyncio.to_thread(coder.write_module, plan, target_file, feedback_payload, 4)
+
+    await manager.broadcast({"type": "agent_trace", "payload": {"trace_id": "TEST-REC", "agent": "Tester", "action": "Validating human fix...", "status": "running"}})
+    tester = Tester()
+    # [FIX]: Threading
+    test_file_path = await asyncio.to_thread(tester.write_tests, filename, "Ensure tests accommodate the human's logic changes.", 4)
+
+    await manager.broadcast({"type": "agent_trace", "payload": {"trace_id": "ANAL-REC", "agent": "Analyzer", "action": "Evaluating fixed code in Sandbox...", "status": "running"}})
+    analyzer = Analyzer()
+    test_filename = os.path.basename(test_file_path) if test_file_path else f"test_{filename}"
+    # [FIX]: Threading
+    report = await asyncio.to_thread(analyzer.evaluate_code, test_filename)
+
+    if report.get("status") == "pass":
+        await manager.broadcast({
+            "type": "agent_trace",
+            "payload": {"trace_id": "SYS-REC", "agent": "Manager", "action": "Recovery Successful. Code is Green.", "status": "running"}
+        })
+    else:
+        await manager.broadcast({
+            "type": "hitl_alert",
+            "payload": {
+                "trace_id": "SYS-HITL-FAIL",
+                "filename": filename,
+                "attempt": "RECOVERY",
+                "error_traceback": report.get("logs", "")[-500:],
+                "action_required": "Recovery failed. Provide another hint."
             }
         })
 

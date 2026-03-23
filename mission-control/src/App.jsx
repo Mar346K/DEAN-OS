@@ -17,7 +17,6 @@ export default function App() {
 
   // --- WEBSOCKET CONNECTION ---
   useEffect(() => {
-    // We will build this endpoint in the Python backend next!
     const ws = new WebSocket("ws://127.0.0.1:8000/ws");
 
     ws.onmessage = (event) => {
@@ -28,13 +27,12 @@ export default function App() {
           setTelemetry(msg.payload);
           break;
         case "agent_trace":
-          setTraceLogs(prev => [...prev.slice(-49), msg.payload]); // Keep last 50 logs
+          setTraceLogs(prev => [...prev.slice(-49), msg.payload]);
           break;
         case "hitl_alert":
           setHitlAlert(msg.payload);
           break;
         case "ast_map":
-          // Map raw Python PIM data into React Flow format
           const formattedNodes = msg.payload.nodes.map((n, i) => ({
             id: n.id,
             position: { x: 250 * (i % 3), y: 100 * Math.floor(i / 3) },
@@ -109,13 +107,14 @@ export default function App() {
           {renderDial(telemetry.ram_usage_percent, "RAM_UTIL", telemetry.ram_usage_percent > 85)}
           {renderDial(telemetry.vram_usage_percent, "VRAM_POOL", telemetry.vram_usage_percent > 90)}
         </div>
+
+        {/* NEW: Command Input & Deploy Button */}
         <div className="mt-auto pt-6 border-t border-outline-variant/20">
           <div className="flex justify-between items-center mb-4">
             <span className="font-headline text-[10px] text-on-surface-variant">GPU_TEMP</span>
             <span className="font-headline text-[10px] text-primary-container font-bold">{telemetry.gpu_temp_c}C</span>
           </div>
 
-          {/* NEW: Command Input & Deploy Button */}
           <div className="flex flex-col gap-2">
               <input
                   type="text"
@@ -195,10 +194,22 @@ export default function App() {
               />
               <div className="flex gap-4">
                 <button
-                  onClick={() => {
-                    // We will wire this HTTP POST request to the backend later
-                    console.log("Submitting fix:", document.getElementById('hitl-input').value);
-                    setHitlAlert(null);
+                  onClick={async () => {
+                    const hintInput = document.getElementById('hitl-input').value;
+                    if (!hintInput) return;
+
+                    // Fire the human hint back to the Orchestrator
+                    await fetch("http://127.0.0.1:8000/hitl/resolve", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                            filename: hitlAlert.filename,
+                            hint: hintInput,
+                            error_traceback: hitlAlert.error_traceback
+                        })
+                    });
+
+                    setHitlAlert(null); // Dismiss the modal
                   }}
                   className="flex-1 bg-secondary-container text-on-secondary font-headline font-bold text-[10px] tracking-[0.2em] py-3 uppercase hover:brightness-110 active:scale-95"
                 >
