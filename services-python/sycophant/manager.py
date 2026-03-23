@@ -2,7 +2,7 @@ import asyncio
 import json
 import os
 import sys
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
 
@@ -84,21 +84,104 @@ async def websocket_endpoint(websocket: WebSocket):
         manager.disconnect(websocket)
         print("[WS] UI Client Disconnected.")
 
-# --- THE TRIGGER ---
-@app.post("/build")
-async def start_build(intent: dict):
-    # This is where we will trigger the AssemblyLine in Phase 20!
-    # For now, just a heartbeat for the UI
+# --- THE SWARM RUNNER ---
+async def execute_assembly_line(prompt: str):
+    """This runs in the background and executes the actual AI Swarm."""
     await manager.broadcast({
         "type": "agent_trace",
+        "payload": {"trace_id": "SYS-001", "agent": "Manager", "action": f"Initiating Assembly Line for: {prompt}", "status": "running"}
+    })
+
+    # 1. The Architect
+    await manager.broadcast({"type": "agent_trace", "payload": {"trace_id": "ARCH-001", "agent": "Architect", "action": "Designing system blueprints...", "status": "running"}})
+    architect = Architect()
+    plan = architect.draft_plan(user_intent=prompt)
+
+    if not plan or 'files' not in plan or len(plan['files']) == 0:
+        await manager.broadcast({"type": "agent_trace", "payload": {"trace_id": "SYS-ERR", "agent": "System", "action": "Architect failed to generate blueprint.", "status": "error"}})
+        return
+
+    # Grab the first file from the blueprint to pass down the assembly line
+    target_file = plan['files'][0]
+    filename = target_file['filename']
+
+    # Update UI Graph
+    await manager.broadcast({
+        "type": "ast_map",
         "payload": {
-            "trace_id": "INIT",
-            "agent": "System",
-            "action": f"Received intent: {intent.get('prompt')}",
-            "status": "running"
+            "nodes": [{"id": filename, "group": "python", "churn_score": 1}],
+            "edges": []
         }
     })
-    return {"status": "accepted"}
+
+    # --- THE SELF-HEALING LOOP ---
+    MAX_RETRIES = 3
+    attempt = 1
+    feedback = None
+
+    while attempt <= MAX_RETRIES:
+        # 2. The Coder
+        action_msg = f"Writing implementation for {filename}..." if attempt == 1 else f"Fixing errors in {filename} (Attempt {attempt})..."
+        await manager.broadcast({"type": "agent_trace", "payload": {"trace_id": f"CODE-00{attempt}", "agent": "Coder", "action": action_msg, "status": "running"}})
+
+        coder = MainCoder()
+        file_path = coder.write_module(project_blueprint=plan, target_file=target_file, feedback=feedback, attempt=attempt)
+
+        # 3. The Tester
+        await manager.broadcast({"type": "agent_trace", "payload": {"trace_id": f"TEST-00{attempt}", "agent": "Tester", "action": f"Writing adversarial tests (Attempt {attempt})...", "status": "running"}})
+        tester = Tester()
+        test_file_path = tester.write_tests(filename=filename, feedback=feedback, attempt=attempt)
+
+        # 4. The Analyzer (Sandbox Execution)
+        await manager.broadcast({"type": "agent_trace", "payload": {"trace_id": f"ANAL-00{attempt}", "agent": "Analyzer", "action": "Evaluating in Oubliette Sandbox...", "status": "running"}})
+        analyzer = Analyzer()
+
+        test_filename = os.path.basename(test_file_path) if test_file_path else f"test_{filename}"
+        report = analyzer.evaluate_code(test_filename=test_filename)
+
+        if report.get("status") == "pass":
+            await manager.broadcast({
+                "type": "agent_trace",
+                "payload": {"trace_id": "SYS-002", "agent": "Manager", "action": "Assembly Line Complete. Code is Verified and Green.", "status": "running"}
+            })
+
+            # [Optional Phase 21: Trigger Deployer here]
+            break
+        else:
+            feedback = report.get("logs", "Unknown Execution Error")
+            await manager.broadcast({
+                "type": "agent_trace",
+                "payload": {"trace_id": f"SYS-ERR-{attempt}", "agent": "Manager", "action": f"Sandbox rejected code. Extracting logs for self-healing...", "status": "error"}
+            })
+            attempt += 1
+
+    # --- HUMAN-IN-THE-LOOP (HITL) ESCALATION ---
+    if attempt > MAX_RETRIES:
+        await manager.broadcast({
+            "type": "agent_trace",
+            "payload": {"trace_id": "SYS-003", "agent": "Manager", "action": "MAX RETRIES EXCEEDED. Escalating to Human-in-the-Loop.", "status": "error"}
+        })
+
+        # Trigger the neon magenta HITL Modal on the React UI!
+        await manager.broadcast({
+            "type": "hitl_alert",
+            "payload": {
+                "trace_id": "SYS-001",
+                "filename": filename,
+                "attempt": MAX_RETRIES,
+                # Send the last 500 characters of the error log so the UI doesn't overflow
+                "error_traceback": feedback[-500:] if feedback else "Unknown systemic failure.",
+                "action_required": "Provide a hint to fix this or press Quarantine."
+            }
+        })
+
+# --- THE TRIGGER ---
+@app.post("/build")
+async def start_build(intent: dict, background_tasks: BackgroundTasks):
+    prompt = intent.get("prompt", "No prompt provided.")
+    # Hand the heavy lifting off to a background thread so the API stays responsive
+    background_tasks.add_task(execute_assembly_line, prompt)
+    return {"status": "Assembly Line Queued"}
 
 if __name__ == "__main__":
     import uvicorn

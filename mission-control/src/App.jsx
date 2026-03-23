@@ -11,6 +11,7 @@ export default function App() {
   const [hitlAlert, setHitlAlert] = useState(null);
   const [astNodes, setAstNodes] = useState([]);
   const [astEdges, setAstEdges] = useState([]);
+  const [promptInput, setPromptInput] = useState("");
 
   const traceEndRef = useRef(null);
 
@@ -109,9 +110,33 @@ export default function App() {
           {renderDial(telemetry.vram_usage_percent, "VRAM_POOL", telemetry.vram_usage_percent > 90)}
         </div>
         <div className="mt-auto pt-6 border-t border-outline-variant/20">
-          <div className="flex justify-between items-center">
+          <div className="flex justify-between items-center mb-4">
             <span className="font-headline text-[10px] text-on-surface-variant">GPU_TEMP</span>
             <span className="font-headline text-[10px] text-primary-container font-bold">{telemetry.gpu_temp_c}C</span>
+          </div>
+
+          {/* NEW: Command Input & Deploy Button */}
+          <div className="flex flex-col gap-2">
+              <input
+                  type="text"
+                  value={promptInput}
+                  onChange={(e) => setPromptInput(e.target.value)}
+                  placeholder="Enter system prompt..."
+                  className="w-full bg-surface-container-low border-b-2 border-outline-variant focus:border-primary-container focus:ring-0 text-primary-container font-mono text-[10px] p-2 outline-none"
+              />
+              <button
+                  onClick={async () => {
+                      if (!promptInput) return;
+                      await fetch("http://127.0.0.1:8000/build", {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ prompt: promptInput })
+                      });
+                      setPromptInput(""); // clear after sending
+                  }}
+                  className="w-full py-3 bg-gradient-to-r from-primary to-primary-container text-on-primary font-headline font-bold text-[10px] tracking-widest uppercase transition-all hover:brightness-110 active:scale-95">
+                  DEPLOY_AGENT
+              </button>
           </div>
         </div>
       </aside>
