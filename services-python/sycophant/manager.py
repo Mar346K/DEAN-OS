@@ -1,5 +1,10 @@
-import sys
+import asyncio
+import json
 import os
+import sys
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+import httpx
 
 # Ensure we can import our agents
 sys.path.append(os.path.dirname(__file__))
@@ -12,131 +17,90 @@ from agents.deployer import Deployer
 from telemetry.tracer import TelemetryEngine
 from telemetry.watchdog import SystemWatchdog
 
-# [PHASE 11] The Self-Healing limit
-MAX_RETRIES = 3
+app = FastAPI(title="DEAN-OS Orchestrator")
 
-class AssemblyLine:
+# Enable CORS so the React dev server can talk to us
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+class ConnectionManager:
     def __init__(self):
-        print("[MANAGER] Booting DEAN-OS Assembly Line...")
-        self.tracer = TelemetryEngine()
-        self.architect = Architect()
-        self.coder = MainCoder()
-        self.tester = Tester()
-        self.analyzer = Analyzer()
-        self.deployer = Deployer()
+        self.active_connections: list[WebSocket] = []
 
-    def build_project(self, intent: str):
-        print(f"\n[MANAGER] Processing User Intent: '{intent}'")
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+        print(f"[WS] UI Client Connected. Total: {len(self.active_connections)}")
 
-        # --- Phase 1: Architecture ---
-        with self.tracer.span("Architect", f"Drafting blueprint for intent: '{intent}'"):
-            blueprint = self.architect.draft_plan(user_intent=intent)
+    def disconnect(self, websocket: WebSocket):
+        self.active_connections.remove(websocket)
 
-        if not blueprint:
-            print("[MANAGER ERROR] Architect failed to produce a valid blueprint. Halting.")
-            return
+    async def broadcast(self, message: dict):
+        for connection in self.active_connections:
+            try:
+                await connection.send_json(message)
+            except Exception: # nosec B112
+                continue
 
-        files_to_build = blueprint.get("files", [])
-        print(f"\n[MANAGER] Blueprint Approved. {len(files_to_build)} modules entering the production line.")
+manager = ConnectionManager()
 
-        # --- Phase 2: The Assembly Loop ---
-        for file_spec in files_to_build:
-            filename = file_spec.get("filename")
-            print(f"\n{'='*50}\n[ASSEMBLY LINE] Processing: {filename}\n{'='*50}")
+# --- THE TELEMETRY BRIDGE ---
+async def hardware_poller():
+    """Polls Aethelgard (Rust) and broadcasts to UI via WebSockets."""
+    async with httpx.AsyncClient() as client:
+        while True:
+            try:
+                # Hit the Rust Governor
+                resp = await client.get("http://127.0.0.1:8003/metrics", timeout=0.5)
+                if resp.status_code == 200:
+                    metrics = resp.json()
+                    await manager.broadcast({
+                        "type": "telemetry",
+                        "payload": metrics
+                    })
+            except Exception as e: # nosec B110
+                pass # Aethelgard might be offline
+            await asyncio.sleep(1) # 1Hz refresh rate
 
-            feedback = None
-            success = False
-            attempt = 1
-            dynamic_max_retries = MAX_RETRIES
+@app.on_event("startup")
+async def startup_event():
+    # Start the hardware background poller
+    asyncio.create_task(hardware_poller())
+    print("[MANAGER] WebSocket bridge initialized.")
 
-            while attempt <= dynamic_max_retries:
-                if attempt > 1:
-                    print(f"\n[MANAGER] 🔄 Initiating Self-Healing Loop (Attempt {attempt}/{dynamic_max_retries}) for {filename}...")
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await manager.connect(websocket)
+    try:
+        while True:
+            # Wait for messages from the UI (like HITL fixes)
+            data = await websocket.receive_text()
+            print(f"[WS] Received from UI: {data}")
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+        print("[WS] UI Client Disconnected.")
 
-                # 1. Write the Code
-                with self.tracer.span("Coder", f"Writing implementation for {filename} (Attempt {attempt})"):
-                    self.tracer.record_hop("Manager", "Coder")
-                    source_path = self.coder.write_module(blueprint, file_spec, feedback=feedback, attempt=attempt)
-
-                if not source_path:
-                    print(f"[MANAGER] Skipping {filename} due to Coder failure.")
-                    break
-
-                # 2. Write the Tests
-                with self.tracer.span("Tester", f"Generating adversarial tests for {filename} (Attempt {attempt})"):
-                    self.tracer.record_hop("Manager", "Tester")
-                    test_path = self.tester.write_tests(filename, feedback=feedback, attempt=attempt)
-
-                if not test_path:
-                    print(f"[MANAGER] Skipping QA for {filename} due to Tester failure.")
-                    break
-
-                # 3. Execute QA in the Sandbox
-                test_filename = f"test_{filename}"
-                with self.tracer.span("Analyzer", f"Evaluating {test_filename} in Oubliette"):
-                    self.tracer.record_hop("Manager", "Analyzer")
-                    report = self.analyzer.evaluate_code(test_filename)
-
-                # 4. Evaluate and Route
-                if report.get("status") == "pass":
-                    with self.tracer.span("Deployer", f"Migrating {filename} to production"):
-                        self.tracer.record_hop("Manager", "Deployer")
-                        self.deployer.deploy_module(filename)
-                        success = True
-                    break  # Escape the retry loop!
-                else:
-                    print(f"[MANAGER ⚠️] QA Failed on Attempt {attempt}.")
-                    feedback = report.get("logs", "Unknown error occurred.")
-
-                    # --- PHASE 16: HITL Checkpoint Interceptor ---
-                    if attempt == dynamic_max_retries:
-                        print(f"\n[MANAGER 🛑] Sandbox execution failed {dynamic_max_retries} times.")
-                        print(f"--- FAULT TRACEBACK ---\n{feedback}\n-----------------------")
-
-                        # Serialize state to disk (Hard checkpoint)
-                        checkpoint_data = {
-                            "intent": intent,
-                            "filename": filename,
-                            "attempt": attempt,
-                            "traceback": feedback
-                        }
-                        checkpoint_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../staging/checkpoint.json"))
-                        with open(checkpoint_path, "w") as f:
-                            import json
-                            json.dump(checkpoint_data, f, indent=4)
-
-                        # Await Human Guidance
-                        print(f"\n[SYSTEM CHECKPOINT SAVED TO {checkpoint_path}]")
-                        human_hint = input("[DEAN-OS HITL] Provide a hint to fix this (or press Enter to Quarantine): ")
-
-                        if human_hint.strip():
-                            print("\n[MANAGER] Human guidance received. Rebooting Assembly Line for this module...")
-                            feedback += f"\n\n[HUMAN OPERATOR GUIDANCE]: {human_hint}"
-                            dynamic_max_retries += 1  # Grant the AI one more attempt using the Tier-2 model
-                        else:
-                            print("\n[MANAGER] No human guidance provided. Proceeding to Quarantine.")
-
-                attempt += 1
-
-            # If we exhausted all retries and it still failed
-            if not success:
-                print(f"\n[MANAGER 🛑] QUARANTINE: {filename} failed QA after {dynamic_max_retries} attempts.")
-                print("It has been left in 'staging/workspace/' for human review. It will NOT be deployed.")
-
-        print("\n[MANAGER] Assembly Line run complete. Check 'workspace/' for production-ready files.")
+# --- THE TRIGGER ---
+@app.post("/build")
+async def start_build(intent: dict):
+    # This is where we will trigger the AssemblyLine in Phase 20!
+    # For now, just a heartbeat for the UI
+    await manager.broadcast({
+        "type": "agent_trace",
+        "payload": {
+            "trace_id": "INIT",
+            "agent": "System",
+            "action": f"Received intent: {intent.get('prompt')}",
+            "status": "running"
+        }
+    })
+    return {"status": "accepted"}
 
 if __name__ == "__main__":
-    try:
-        # --- PHASE 16: Pre-flight Check ---
-        guard = SystemWatchdog()
-        guard.run_preflight_check()
-        # ----------------------------------
-
-        manager = AssemblyLine()
-
-        # The Ultimate Test
-        prompt = "Build a modular terminal Blackjack game with CSV save states for player bankrolls."
-        manager.build_project(intent=prompt)
-    except KeyboardInterrupt:
-        print("\n\n[MANAGER 🛑] System execution halted by user (Ctrl+C). Shutting down Assembly Line.")
-        sys.exit(0)
+    import uvicorn
+    # Start the server on 8000
+    uvicorn.run(app, host="127.0.0.1", port=8000)
