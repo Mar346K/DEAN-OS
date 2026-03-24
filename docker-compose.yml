@@ -70,6 +70,34 @@ services:
     networks:
       - swarm_net
 
+  # --- THE ASYNC WORKER (Phase 26) ---
+  worker:
+    build:
+      context: .
+      dockerfile: services-python/Dockerfile
+    container_name: deanos_worker
+    # Instead of a web server, we start a Celery worker targeting the 'sycophant.tasks' module
+    command: ["celery", "-A", "sycophant.tasks", "worker", "--loglevel=info", "--pool=threads", "--concurrency=4"]
+    environment:
+      - QDRANT_HOST=qdrant
+      - REDIS_HOST=redis
+      - AETHELGARD_HOST=aethelgard
+      - OUBLIETTE_HOST=oubliette
+      - OLLAMA_HOST=host.docker.internal
+      - DATABASE_URL=${DATABASE_URL}
+      - CELERY_BROKER_URL=redis://redis:6379/0
+    volumes:
+      - ./services-python:/app
+      - ./workspace:/app/workspace
+      - ./staging:/app/staging
+      - ./infrastructure:/app/infrastructure
+    depends_on:
+      - redis
+      - db
+      - oubliette
+    networks:
+      - swarm_net
+
   mnemosyne:
     build:
       context: .
