@@ -3,16 +3,22 @@ import json
 import os
 import sys
 import logging
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
 import redis.asyncio as aioredis
 from contextlib import asynccontextmanager
 
+# --- NEW IMPORTS FOR PHASE 1 (LOGS) ---
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from database.session import get_db
+from database.models import TaskTrace
+# --------------------------------------
+
 sys.path.append(os.path.dirname(__file__))
 from tasks import execute_assembly_line_task
 
-# Hijack Uvicorn's native logger so our messages NEVER get buffered or hidden
 logger = logging.getLogger("uvicorn.error")
 
 class ConnectionManager:
@@ -37,7 +43,6 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
-# --- BACKGROUND WORKERS ---
 async def redis_listener():
     logger.info("[REDIS] Starting listener thread...")
     try:
@@ -84,14 +89,12 @@ async def hardware_poller():
                 pass
             await asyncio.sleep(1)
 
-# --- MODERN LIFESPAN ---
 background_tasks = set()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("[MANAGER] Booting system and background tasks...")
 
-    # Create tasks and keep strong references
     poller = asyncio.create_task(hardware_poller())
     listener = asyncio.create_task(redis_listener())
 
@@ -100,7 +103,7 @@ async def lifespan(app: FastAPI):
 
     logger.info("[MANAGER] All background workers initialized.")
 
-    yield # Hand control to FastAPI
+    yield
 
     logger.info("[MANAGER] Shutting down workers...")
     for task in background_tasks:
@@ -131,6 +134,30 @@ async def start_build(intent: dict):
     logger.info(f"[API] Received build request. Dispatching to Celery: {prompt[:30]}...")
     execute_assembly_line_task.delay(prompt)
     return {"status": "Assembly Line Queued via Celery"}
+
+# --- NEW PHASE 1 ENDPOINT: THE FORENSIC LEDGER ---
+@app.get("/logs")
+async def get_forensic_logs(db: AsyncSession = Depends(get_db)):
+    """Fetches the permanent forensic ledger of all AI actions from Postgres."""
+    # Get the latest 100 traces, ordered newest to oldest
+    query = select(TaskTrace).order_by(TaskTrace.id.desc()).limit(100)
+    result = await db.execute(query)
+    traces = result.scalars().all()
+
+    # Reverse them back to chronological order for the UI terminal
+    return [
+        {
+            "id": t.id,
+            "run_id": str(t.run_id),
+            "trace_id": t.trace_id,
+            "agent_name": t.agent_name,
+            "action": t.action,
+            "status": t.status,
+            "timestamp": t.timestamp.isoformat(),
+            "logs": t.logs
+        }
+        for t in reversed(traces)
+    ]
 
 if __name__ == "__main__":
     import uvicorn
