@@ -26,3 +26,6 @@ staging/
 
 staging/workspace/
 workspace/
+
+# Hide the .env file that contains sensitive environment variables
+.env
