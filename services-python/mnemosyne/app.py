@@ -76,4 +76,4 @@ async def search_memory(query: str, authorized: bool = Depends(verify_agent_toke
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8001)
+    uvicorn.run(app, host="0.0.0.0", port=8001) # nosec B104

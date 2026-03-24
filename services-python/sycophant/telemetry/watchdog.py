@@ -3,11 +3,15 @@ import sys
 
 class SystemWatchdog:
     def __init__(self):
-        # The core infrastructure ports DEAN-OS relies on
+        # [FIX] Dynamic infrastructure routing
+        ollama_host = os.getenv("OLLAMA_HOST", "host.docker.internal")
+        oubliette_host = os.getenv("OUBLIETTE_HOST", "127.0.0.1")
+        aethelgard_host = os.getenv("AETHELGARD_HOST", "127.0.0.1")
+
         self.services = {
-            "Ollama (Local LLM Engine)": "http://127.0.0.1:11434/",
-            "Oubliette (Docker Sandbox)": "http://127.0.0.1:8002/run",
-            "Aethelgard (Rust Governor)": "http://127.0.0.1:8003/metrics"
+            "Ollama (Local LLM Engine)": f"http://{ollama_host}:11434/",
+            "Oubliette (Docker Sandbox)": f"http://{oubliette_host}:8002/run",
+            "Aethelgard (Rust Governor)": f"http://{aethelgard_host}:8003/metrics"
         }
 
     def run_preflight_check(self):

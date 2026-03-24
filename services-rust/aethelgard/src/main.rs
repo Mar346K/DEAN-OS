@@ -58,8 +58,15 @@ async fn main() {
         .route("/trace", post(record_trace)) // [NEW] The Deadlock API
         .with_state(shared_state);
 
-    let listener = TcpListener::bind("127.0.0.1:8003").await.unwrap();
-    println!("[AETHELGARD] Online. Guarding Hardware & Monitoring DAG on http://127.0.0.1:8003");
+    // let listener = TcpListener::bind("127.0.0.1:8003").await.unwrap();
+    // println!("[AETHELGARD] Online. Guarding Hardware & Monitoring DAG on http://127.0.0.1:8003");
+
+    // Change this:
+    // let listener = TcpListener::bind("127.0.0.1:8003").await.unwrap();
+
+    // To this:
+    let listener = TcpListener::bind("0.0.0.0:8003").await.unwrap();
+    println!("[AETHELGARD] Online. Guarding Hardware & Monitoring DAG on http://0.0.0.0:8003");
 
     axum::serve(listener, app).await.unwrap();
 }

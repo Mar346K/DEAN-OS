@@ -7,8 +7,9 @@ class TelemetryEngine:
     def __init__(self):
         # Generate a unique 8-character ID for the entire lifecycle of the user prompt
         self.current_trace_id = str(uuid.uuid4())[:8]
-        # The URL for our Rust Governor (Aethelgard)
-        self.aethelgard_url = "http://127.0.0.1:8003/trace"
+        # [FIX] Dynamic routing to the Rust Governor
+        aethelgard_host = os.getenv("AETHELGARD_HOST", "127.0.0.1")
+        self.aethelgard_url = f"http://{aethelgard_host}:8003/trace"
 
     @contextmanager
     def span(self, agent_name: str, action: str):

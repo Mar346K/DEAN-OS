@@ -14,8 +14,6 @@ from agents.coder import MainCoder
 from agents.tester import Tester
 from agents.analyzer import Analyzer
 from agents.deployer import Deployer
-from telemetry.tracer import TelemetryEngine
-from telemetry.watchdog import SystemWatchdog
 
 app = FastAPI(title="DEAN-OS Orchestrator")
 
@@ -51,24 +49,25 @@ manager = ConnectionManager()
 # --- THE TELEMETRY BRIDGE ---
 async def hardware_poller():
     """Polls Aethelgard (Rust) and broadcasts to UI via WebSockets."""
+    AETHELGARD_HOST = os.getenv("AETHELGARD_HOST", "127.0.0.1")
+    AETHELGARD_URL = f"http://{AETHELGARD_HOST}:8003/metrics"
+
     async with httpx.AsyncClient() as client:
         while True:
             try:
-                # Hit the Rust Governor
-                resp = await client.get("http://127.0.0.1:8003/metrics", timeout=0.5)
+                resp = await client.get(AETHELGARD_URL, timeout=0.5)
                 if resp.status_code == 200:
                     metrics = resp.json()
                     await manager.broadcast({
                         "type": "telemetry",
                         "payload": metrics
                     })
-            except Exception as e: # nosec B110
-                pass # Aethelgard might be offline
-            await asyncio.sleep(1) # 1Hz refresh rate
+            except Exception: # nosec B110
+                pass
+            await asyncio.sleep(1)
 
 @app.on_event("startup")
 async def startup_event():
-    # Start the hardware background poller
     asyncio.create_task(hardware_poller())
     print("[MANAGER] WebSocket bridge initialized.")
 
@@ -77,7 +76,6 @@ async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     try:
         while True:
-            # Wait for messages from the UI (like HITL fixes)
             data = await websocket.receive_text()
             print(f"[WS] Received from UI: {data}")
     except WebSocketDisconnect:
@@ -95,8 +93,6 @@ async def execute_assembly_line(prompt: str):
     # 1. The Architect
     await manager.broadcast({"type": "agent_trace", "payload": {"trace_id": "ARCH-001", "agent": "Architect", "action": "Designing system blueprints...", "status": "running"}})
     architect = Architect()
-
-    # [FIX]: Offload blocking LLM call to a background thread!
     plan = await asyncio.to_thread(architect.draft_plan, prompt)
 
     if not plan or 'files' not in plan or len(plan['files']) == 0:
@@ -124,23 +120,31 @@ async def execute_assembly_line(prompt: str):
         await manager.broadcast({"type": "agent_trace", "payload": {"trace_id": f"CODE-00{attempt}", "agent": "Coder", "action": action_msg, "status": "running"}})
 
         coder = MainCoder()
-        # [FIX]: Threading
         file_path = await asyncio.to_thread(coder.write_module, plan, target_file, feedback, attempt)
 
+        # 2. The Tester
         await manager.broadcast({"type": "agent_trace", "payload": {"trace_id": f"TEST-00{attempt}", "agent": "Tester", "action": f"Writing adversarial tests (Attempt {attempt})...", "status": "running"}})
         tester = Tester()
-        # [FIX]: Threading
         test_file_path = await asyncio.to_thread(tester.write_tests, filename, feedback, attempt)
 
+        # --- [FIX] Safety check: If Tester failed to produce valid JSON code, trigger retry immediately ---
+        if not test_file_path:
+            feedback = "TESTER AGENT FAILED TO GENERATE VALID JSON. Ensure your output is strictly formatted JSON with properly escaped quotes."
+            await manager.broadcast({
+                "type": "agent_trace",
+                "payload": {"trace_id": f"SYS-ERR-{attempt}", "agent": "Manager", "action": "Tester generated invalid syntax. Retrying Swarm...", "status": "error"}
+            })
+            attempt += 1
+            continue
+
+        # 3. The Analyzer
         await manager.broadcast({"type": "agent_trace", "payload": {"trace_id": f"ANAL-00{attempt}", "agent": "Analyzer", "action": "Evaluating in Oubliette Sandbox...", "status": "running"}})
         analyzer = Analyzer()
-
-        test_filename = os.path.basename(test_file_path) if test_file_path else f"test_{filename}"
-        # [FIX]: Threading
+        test_filename = os.path.basename(test_file_path)
         report = await asyncio.to_thread(analyzer.evaluate_code, test_filename)
 
         if report.get("status") == "pass":
-            # --- PHASE 22: THE DEPLOYER ---
+            # 4. The Deployer
             await manager.broadcast({"type": "agent_trace", "payload": {"trace_id": "DEP-001", "agent": "Deployer", "action": f"Migrating {filename} to production workspace...", "status": "running"}})
             deployer = Deployer()
             prod_path = await asyncio.to_thread(deployer.deploy_module, filename)
@@ -150,12 +154,10 @@ async def execute_assembly_line(prompt: str):
                 "payload": {"trace_id": "SYS-002", "agent": "Manager", "action": f"Assembly Line Complete. {filename} is live in Production.", "status": "running"}
             })
 
-            # --- PHASE 23: LIVE CARTOGRAPHY ---
-            # Update the React UI graph with the newly deployed file
             await manager.broadcast({
                 "type": "ast_map",
                 "payload": {
-                    "nodes": [{"id": filename, "group": "python", "churn_score": 0}], # Fresh code has 0 scar tissue!
+                    "nodes": [{"id": filename, "group": "python", "churn_score": 0}],
                     "edges": []
                 }
             })
@@ -164,11 +166,10 @@ async def execute_assembly_line(prompt: str):
             feedback = report.get("logs", "Unknown Execution Error")
             await manager.broadcast({
                 "type": "agent_trace",
-                "payload": {"trace_id": f"SYS-ERR-{attempt}", "agent": "Manager", "action": f"Sandbox rejected code. Extracting logs for self-healing...", "status": "error"}
+                "payload": {"trace_id": f"SYS-ERR-{attempt}", "agent": "Manager", "action": "Sandbox rejected code. Extracting logs for self-healing...", "status": "error"}
             })
             attempt += 1
 
-    # --- HUMAN-IN-THE-LOOP (HITL) ESCALATION ---
     if attempt > MAX_RETRIES:
         await manager.broadcast({
             "type": "agent_trace",
@@ -188,7 +189,6 @@ async def execute_assembly_line(prompt: str):
 
 # --- THE NEURAL OVERRIDE (HITL RECOVERY) ---
 async def execute_recovery_line(filename: str, hint: str, error_log: str):
-    """A specialized swarm that injects human feedback directly into the Coder."""
     await manager.broadcast({
         "type": "agent_trace",
         "payload": {"trace_id": "SYS-HITL", "agent": "Manager", "action": f"Neural Override Accepted for {filename}. Re-engaging Swarm...", "status": "running"}
@@ -200,37 +200,36 @@ async def execute_recovery_line(filename: str, hint: str, error_log: str):
 
     await manager.broadcast({"type": "agent_trace", "payload": {"trace_id": "CODE-REC", "agent": "Coder", "action": "Applying human fix...", "status": "running"}})
     coder = MainCoder()
-    # [FIX]: Threading
     file_path = await asyncio.to_thread(coder.write_module, plan, target_file, feedback_payload, 4)
 
     await manager.broadcast({"type": "agent_trace", "payload": {"trace_id": "TEST-REC", "agent": "Tester", "action": "Validating human fix...", "status": "running"}})
     tester = Tester()
-    # [FIX]: Threading
-    test_file_path = await asyncio.to_thread(tester.write_tests, filename, "Ensure tests accommodate the human's logic changes.", 4)
+    test_file_path = await asyncio.to_thread(tester.write_tests, filename, "Ensure tests accommodate logic changes.", 4)
+
+    # Safety check for HITL recovery too
+    if not test_file_path:
+        await manager.broadcast({"type": "agent_trace", "payload": {"trace_id": "SYS-HITL-FAIL", "agent": "Manager", "action": "Recovery Tester produced invalid JSON.", "status": "error"}})
+        return
 
     await manager.broadcast({"type": "agent_trace", "payload": {"trace_id": "ANAL-REC", "agent": "Analyzer", "action": "Evaluating fixed code in Sandbox...", "status": "running"}})
     analyzer = Analyzer()
-    test_filename = os.path.basename(test_file_path) if test_file_path else f"test_{filename}"
-    # [FIX]: Threading
+    test_filename = os.path.basename(test_file_path)
     report = await asyncio.to_thread(analyzer.evaluate_code, test_filename)
 
     if report.get("status") == "pass":
-            # --- PHASE 22: THE DEPLOYER ---
-            await manager.broadcast({"type": "agent_trace", "payload": {"trace_id": "DEP-001", "agent": "Deployer", "action": f"Migrating {filename} to production workspace...", "status": "running"}})
+            await manager.broadcast({"type": "agent_trace", "payload": {"trace_id": "DEP-001", "agent": "Deployer", "action": f"Migrating {filename} to production...", "status": "running"}})
             deployer = Deployer()
             prod_path = await asyncio.to_thread(deployer.deploy_module, filename)
 
             await manager.broadcast({
                 "type": "agent_trace",
-                "payload": {"trace_id": "SYS-002", "agent": "Manager", "action": f"Assembly Line Complete. {filename} is live in Production.", "status": "running"}
+                "payload": {"trace_id": "SYS-002", "agent": "Manager", "action": f"Assembly Line Complete. {filename} is live.", "status": "running"}
             })
 
-            # --- PHASE 23: LIVE CARTOGRAPHY ---
-            # Update the React UI graph with the newly deployed file
             await manager.broadcast({
                 "type": "ast_map",
                 "payload": {
-                    "nodes": [{"id": filename, "group": "python", "churn_score": 0}], # Fresh code has 0 scar tissue!
+                    "nodes": [{"id": filename, "group": "python", "churn_score": 0}],
                     "edges": []
                 }
             })
@@ -246,26 +245,21 @@ async def execute_recovery_line(filename: str, hint: str, error_log: str):
             }
         })
 
-# --- THE TRIGGER ---
 @app.post("/build")
 async def start_build(intent: dict, background_tasks: BackgroundTasks):
     prompt = intent.get("prompt", "No prompt provided.")
-    # Hand the heavy lifting off to a background thread so the API stays responsive
     background_tasks.add_task(execute_assembly_line, prompt)
     return {"status": "Assembly Line Queued"}
 
-# --- THE HITL TRIGGER ---
 @app.post("/hitl/resolve")
 async def resolve_hitl(intent: dict, background_tasks: BackgroundTasks):
     filename = intent.get("filename")
     hint = intent.get("hint")
     error_log = intent.get("error_traceback")
-
-    # Hand the recovery line off to the background thread
     background_tasks.add_task(execute_recovery_line, filename, hint, error_log)
     return {"status": "Recovery Swarm Deployed"}
 
 if __name__ == "__main__":
     import uvicorn
-    # Start the server on 8000
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    # 0.0.0.0 is critical for Docker
+    uvicorn.run(app, host="0.0.0.0", port=8000) # nosec B104

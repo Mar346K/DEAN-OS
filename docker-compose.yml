@@ -1,0 +1,119 @@
+version: '3.8'
+
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: deanos_qdrant
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_storage:/qdrant/storage
+    networks:
+      - swarm_net
+    restart: unless-stopped
+
+  redis:
+    image: redis:alpine
+    container_name: deanos_redis
+    ports:
+      - "6380:6379"
+    networks:
+      - swarm_net
+    restart: unless-stopped
+
+  # --- THE 3 PYTHON MICROSERVICES ---
+  api:
+    build:
+      context: . # <-- Changed to root so it can see core-rust
+      dockerfile: services-python/Dockerfile
+    container_name: deanos_api
+    command: ["uvicorn", "sycophant.manager:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    ports:
+      - "8000:8000"
+    environment:
+      - QDRANT_HOST=qdrant
+      - REDIS_HOST=redis
+      - AETHELGARD_HOST=aethelgard
+      - OUBLIETTE_HOST=oubliette
+      - OLLAMA_HOST=host.docker.internal
+    volumes:
+      - ./services-python:/app # <-- Fixed mount path for hot-reloading
+      - ./workspace:/app/workspace
+      - ./staging:/app/staging
+      - ./infrastructure:/app/infrastructure # <-- [ADD THIS LINE]
+    depends_on:
+      - qdrant
+      - redis
+      - mnemosyne
+      - oubliette
+    networks:
+      - swarm_net
+
+  mnemosyne:
+    build:
+      context: .
+      dockerfile: services-python/Dockerfile
+    container_name: deanos_mnemosyne
+    command: ["uvicorn", "mnemosyne.app:app", "--host", "0.0.0.0", "--port", "8001", "--reload"]
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./services-python:/app
+      - ./storage:/app/storage
+      - ./docs:/app/docs
+    depends_on:
+      - qdrant
+    networks:
+      - swarm_net
+
+  oubliette:
+    build:
+      context: .
+      dockerfile: services-python/Dockerfile
+    container_name: deanos_oubliette
+    command: ["uvicorn", "oubliette.app:app", "--host", "0.0.0.0", "--port", "8002", "--reload"]
+    ports:
+      - "8002:8002"
+    environment:
+      - HOST_WORKSPACE_PATH=${PWD}/staging/workspace
+    volumes:
+      - ./services-python:/app
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./infrastructure:/app/infrastructure # <-- [ADD THIS LINE]
+    networks:
+      - swarm_net
+
+  # --- UI & HARDWARE ---
+  ui:
+    build:
+      context: ./mission-control
+      dockerfile: Dockerfile
+    container_name: deanos_ui
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_API_URL=http://localhost:8000
+    volumes:
+      - ./mission-control/src:/app/src
+    depends_on:
+      - api
+    networks:
+      - swarm_net
+
+  aethelgard:
+    build:
+      context: ./services-rust/aethelgard
+      dockerfile: Dockerfile
+    container_name: deanos_aethelgard
+    ports:
+      - "8003:8003"
+    networks:
+      - swarm_net
+    privileged: true
+
+networks:
+  swarm_net:
+    driver: bridge
+
+volumes:
+  qdrant_storage:

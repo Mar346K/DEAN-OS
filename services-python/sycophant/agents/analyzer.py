@@ -3,8 +3,9 @@ import os
 import valkyrie_crypto
 
 class Analyzer:
-    def __init__(self, sandbox_url="http://127.0.0.1:8002"):
-        self.sandbox_url = sandbox_url
+    def __init__(self):
+        oubliette_host = os.getenv("OUBLIETTE_HOST", "127.0.0.1")
+        self.sandbox_url = f"http://{oubliette_host}:8002"
         self.secret = os.getenv("DAEN_INTERNAL_SECRET", "daen-internal-dev-secret-2026")
 
     def evaluate_code(self, test_filename: str) -> dict:

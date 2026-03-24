@@ -49,6 +49,7 @@ fn get_ledger() -> &'static Mutex<HashMap<String, f32>> {
 fn load_policy() -> Policy {
     let yaml_str = fs::read_to_string("infrastructure/policy.yaml")
         .unwrap_or_else(|_| panic!("CRITICAL: Valkyrie PDP Firewall cannot find policy.yaml"));
+
     serde_yaml::from_str(&yaml_str).expect("Failed to parse policy.yaml")
 }
 

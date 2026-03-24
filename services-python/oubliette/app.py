@@ -41,11 +41,10 @@ def health_check():
 async def run_in_workspace(payload: RunRequest, authorized: bool = Depends(verify_agent_token)):
     """Executes code within the context of the mounted workspace."""
 
-    host_workspace = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../staging/workspace"))
-
-    # [FIX] Since we override the entrypoint below, we just pass the arguments here
-    if payload.code:
-        cmd = ["-c", payload.code]
+    # [FIX] Pull the true Host OS path from Docker Compose, or fallback to local relative path
+    host_workspace = os.getenv("HOST_WORKSPACE_PATH")
+    if not host_workspace:
+        host_workspace = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../staging/workspace"))
     else:
         cmd = [payload.entrypoint]
 
@@ -80,4 +79,4 @@ async def run_in_workspace(payload: RunRequest, authorized: bool = Depends(verif
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8002)
+    uvicorn.run(app, host="0.0.0.0", port=8002) # nosec B104
