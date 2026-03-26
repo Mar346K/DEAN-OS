@@ -3,8 +3,8 @@ import ReactFlow, { Background, Controls } from 'reactflow';
 import 'reactflow/dist/style.css';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState("STAGING"); 
-  const [forensicLogs, setForensicLogs] = useState([]); 
+  const [activeTab, setActiveTab] = useState("SETTINGS");
+  const [forensicLogs, setForensicLogs] = useState([]);
   const [workspaceFiles, setWorkspaceFiles] = useState([]);
   const [selectedPaths, setSelectedPaths] = useState(new Set());
   const [isDragging, setIsDragging] = useState(false);
@@ -12,15 +12,14 @@ export default function App() {
   const [isMapping, setIsMapping] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
 
-  // --- ASSEMBLY LINE / STAGING STATE ---
   const [outputFiles, setOutputFiles] = useState([]);
   const [activeFilePath, setActiveFilePath] = useState(null);
   const [activeFileContent, setActiveFileContent] = useState("");
-  const [activeError, setActiveError] = useState(null); // Holds the traceback for the current file
+  const [activeError, setActiveError] = useState(null);
   const [isSaving, setIsSaving] = useState(false);
-  
+
   const [validationLogs, setValidationLogs] = useState([]);
-  const [quarantineFiles, setQuarantineFiles] = useState([]); // List of HITL alerts
+  const [quarantineFiles, setQuarantineFiles] = useState([]);
   const validationLogEndRef = useRef(null);
 
   const [telemetry, setTelemetry] = useState({
@@ -31,6 +30,12 @@ export default function App() {
   const [astEdges, setAstEdges] = useState([]);
   const [promptInput, setPromptInput] = useState("");
   const traceEndRef = useRef(null);
+
+  // --- GOVERNANCE STATE (GEMINI ADDED) ---
+  const [keys, setKeys] = useState({ openai: "", anthropic: "", gemini: "" });
+  const [keyStatus, setKeyStatus] = useState({ openai: "UNSEALED", anthropic: "UNSEALED", gemini: "UNSEALED" });
+  const [budget, setBudget] = useState(1.00);
+  const [budgetStatus, setBudgetStatus] = useState("SYNCED");
 
   const fetchLogs = async () => {
     try {
@@ -79,7 +84,6 @@ export default function App() {
           }]);
           break;
         case "hitl_alert":
-          // Add the file to the Quarantine Zone
           setQuarantineFiles(prev => {
               if (prev.find(f => f.filename === msg.payload.filename)) return prev;
               return [...prev, msg.payload];
@@ -110,7 +114,7 @@ export default function App() {
           }));
           setAstNodes(formattedNodes);
           setAstEdges(msg.payload.edges.map((e, i) => ({
-            id: `e${i}`, source: e.source, target: e.target, animated: true, 
+            id: `e${i}`, source: e.source, target: e.target, animated: true,
             style: { stroke: '#00f3ff', strokeWidth: 2 }
           })));
           setActiveTab("AST_MAPPER");
@@ -124,6 +128,35 @@ export default function App() {
   useEffect(() => { traceEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [traceLogs]);
   useEffect(() => { validationLogEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [validationLogs]);
 
+  // --- GOVERNANCE HANDLERS ---
+  const handleSaveKey = async (provider) => {
+    setKeyStatus(prev => ({ ...prev, [provider]: "ENCRYPTING..." }));
+    try {
+        const res = await fetch("http://127.0.0.1:8000/settings/keys", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ provider, api_key: keys[provider] })
+        });
+        const data = await res.json();
+        if (data.status === "success") {
+            setKeyStatus(prev => ({ ...prev, [provider]: "SEALED" }));
+            setKeys(prev => ({ ...prev, [provider]: "" }));
+        } else {
+            setKeyStatus(prev => ({ ...prev, [provider]: "FAILED" }));
+        }
+    } catch (err) { setKeyStatus(prev => ({ ...prev, [provider]: "FAILED" })); }
+  };
+
+  const handleSaveBudget = async () => {
+      setBudgetStatus("SYNCING...");
+      try {
+          await fetch("http://127.0.0.1:8000/settings/budget", {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ limit: budget })
+          });
+          setTimeout(() => setBudgetStatus("SYNCED"), 500);
+      } catch (err) { setBudgetStatus("FAILED"); }
+  };
+
   const handleDrop = async (e) => {
     e.preventDefault();
     setIsDragging(false);
@@ -136,7 +169,7 @@ export default function App() {
         const res = await fetch("http://127.0.0.1:8000/ingest", { method: "POST", body: formData });
         const result = await res.json();
         if(result.status === "success") { setSelectedPaths(new Set()); fetchWorkspace(); }
-    } catch (err) { alert("Failed to connect to Intake Forge."); } 
+    } catch (err) { alert("Failed to connect to Intake Forge."); }
     finally { setIsUploading(false); }
   };
 
@@ -163,11 +196,10 @@ export default function App() {
 
   const handleGenerateWorkspaceMap = async () => {
       setIsMapping(true);
-      try { await fetch("http://127.0.0.1:8000/workspace/map", { method: "POST" }); } 
+      try { await fetch("http://127.0.0.1:8000/workspace/map", { method: "POST" }); }
       catch (err) { setIsMapping(false); }
   };
 
-  // --- ASSEMBLY LINE HANDLERS ---
   const handleLoadFile = async (path, errorTraceback = null) => {
       setActiveFilePath(path);
       setActiveError(errorTraceback);
@@ -179,7 +211,6 @@ export default function App() {
           if (data.status === "success") {
               setActiveFileContent(data.content);
           } else {
-              // [NEW] Handle missing files gracefully for HITL
               if (data.message && data.message.includes("No such file")) {
                   setActiveFileContent(`# File '${path}' is missing.\n# Write your code here to create it and rescue the Swarm...`);
               } else {
@@ -193,13 +224,10 @@ export default function App() {
       if (!activeFilePath) return;
       setIsSaving(true);
       try {
-          // 1. Save the code
           await fetch("http://127.0.0.1:8000/file/write", {
-              method: "POST", headers: { "Content-Type": "application/json" }, 
+              method: "POST", headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ path: activeFilePath, content: activeFileContent })
           });
-
-          // 2. Check if it was quarantined and resolve it
           const isQuarantined = quarantineFiles.find(f => f.filename === activeFilePath);
           if (isQuarantined) {
               await fetch("http://127.0.0.1:8000/hitl/resolve", {
@@ -209,20 +237,22 @@ export default function App() {
               setQuarantineFiles(prev => prev.filter(f => f.filename !== activeFilePath));
               setActiveError(null);
           }
-
           setTimeout(() => setIsSaving(false), 500);
       } catch (err) { setIsSaving(false); alert("Failed to save file."); }
   };
 
   const handleGenerateOutputMap = async () => {
       setIsMapping(true);
-      try { await fetch("http://127.0.0.1:8000/output/map", { method: "POST" }); } 
+      try { await fetch("http://127.0.0.1:8000/output/map", { method: "POST" }); }
       catch (err) { setIsMapping(false); }
   };
 
-  const renderDial = (value, label, isCritical) => {
+  const renderDial = (value, label, alertLevel) => {
     const offset = 364.4 - (364.4 * (value / 100));
-    const colorClass = isCritical ? "text-secondary-container" : "text-primary-container";
+    let colorClass = "text-primary-container";
+    if (alertLevel === "critical") { colorClass = "text-red-500 font-black drop-shadow-[0_0_8px_rgba(239,68,68,0.8)]"; }
+    else if (alertLevel === "ai-load") { colorClass = "text-secondary-container drop-shadow-[0_0_8px_rgba(254,0,254,0.6)]"; }
+
     return (
       <div className="flex flex-col items-center">
         <div className="relative w-32 h-32 flex items-center justify-center">
@@ -243,10 +273,7 @@ export default function App() {
     return nodes.map((node, i) => (
       <div key={i} className="ml-4 mt-2">
         <div className="flex items-center gap-3 font-mono text-[12px] bg-[#1a1a1c] p-1.5 border border-outline-variant/10 rounded-sm mb-1 hover:bg-[#222225] transition-colors">
-          <input 
-            type="checkbox" checked={selectedPaths.has(node.path)} onChange={() => handleToggleSelect(node.path)}
-            className="w-4 h-4 accent-primary-container cursor-pointer"
-          />
+          <input type="checkbox" checked={selectedPaths.has(node.path)} onChange={() => handleToggleSelect(node.path)} className="w-4 h-4 accent-primary-container cursor-pointer" />
           <span className={node.type === "folder" ? "text-secondary-container font-bold" : "text-primary-container"}>
             {node.type === "folder" ? "📁" : "📄"} {node.name}
           </span>
@@ -259,11 +286,7 @@ export default function App() {
   const renderOutputTree = (nodes) => {
     return nodes.map((node, i) => (
       <div key={i} className="ml-3 mt-1">
-        <div 
-            onClick={() => node.type === "file" && handleLoadFile(node.path, null)}
-            className={`flex items-center gap-2 font-mono text-[11px] p-1.5 border border-outline-variant/10 rounded-sm transition-colors cursor-pointer
-                ${activeFilePath === node.path ? 'bg-primary-container/20 border-primary-container/50' : 'bg-[#1a1a1c] hover:bg-[#222225]'}`
-            }>
+        <div onClick={() => node.type === "file" && handleLoadFile(node.path, null)} className={`flex items-center gap-2 font-mono text-[11px] p-1.5 border border-outline-variant/10 rounded-sm transition-colors cursor-pointer ${activeFilePath === node.path ? 'bg-primary-container/20 border-primary-container/50' : 'bg-[#1a1a1c] hover:bg-[#222225]'}`}>
           <span className={node.type === "folder" ? "text-secondary-container font-bold" : "text-primary-container"}>
             {node.type === "folder" ? "📁" : "📄"} {node.name}
           </span>
@@ -272,6 +295,8 @@ export default function App() {
       </div>
     ));
   };
+
+  const isSystemCritical = telemetry.cpu_usage_percent >= 95 || telemetry.ram_usage_percent >= 95;
 
   return (
     <div className="bg-background text-on-surface font-body min-h-screen selection:bg-primary-container selection:text-on-primary">
@@ -287,8 +312,8 @@ export default function App() {
             </nav>
         </div>
         <div className="flex items-center gap-4">
-            <span className="font-headline text-[10px] text-primary-container font-bold tracking-widest">
-                {telemetry.status === "HEALTHY" ? "🟢 SYSTEM SECURE" : "🔴 HARDWARE CRITICAL"}
+            <span className={`font-headline text-[10px] font-bold tracking-widest ${isSystemCritical ? 'text-red-500 animate-pulse drop-shadow-[0_0_8px_rgba(239,68,68,0.8)]' : 'text-primary-container'}`}>
+                {!isSystemCritical ? "🟢 SYSTEM SECURE" : "🔴 HARDWARE CRITICAL"}
             </span>
         </div>
       </header>
@@ -299,9 +324,9 @@ export default function App() {
           <span className="font-headline font-bold text-[10px] tracking-widest uppercase text-on-surface-variant">AETHELGARD_TELEMETRY</span>
         </div>
         <div className="space-y-8">
-          {renderDial(telemetry.cpu_usage_percent, "CPU_LOAD", false)}
-          {renderDial(telemetry.ram_usage_percent, "RAM_UTIL", telemetry.ram_usage_percent > 85)}
-          {renderDial(telemetry.vram_usage_percent, "VRAM_POOL", telemetry.vram_usage_percent > 90)}
+          {renderDial(telemetry.cpu_usage_percent, "CPU_LOAD", telemetry.cpu_usage_percent >= 95 ? "critical" : "normal")}
+          {renderDial(telemetry.ram_usage_percent, "RAM_UTIL", telemetry.ram_usage_percent >= 95 ? "critical" : "normal")}
+          {renderDial(telemetry.vram_usage_percent, "VRAM_POOL", telemetry.vram_usage_percent >= 85 ? "ai-load" : "normal")}
         </div>
         <div className="mt-auto pt-6 border-t border-outline-variant/20">
           <div className="flex flex-col gap-2">
@@ -309,7 +334,7 @@ export default function App() {
               <button onClick={async () => {
                       if (!promptInput) return;
                       await fetch("http://127.0.0.1:8000/build", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt: promptInput }) });
-                      setPromptInput(""); 
+                      setPromptInput("");
                   }} className="w-full py-3 bg-gradient-to-r from-primary to-primary-container text-on-primary font-headline font-bold text-[10px] tracking-widest uppercase hover:brightness-110 active:scale-95">
                   DEPLOY_AGENT
               </button>
@@ -318,6 +343,140 @@ export default function App() {
       </aside>
 
       <main className="ml-72 mt-14 mb-48 p-8 h-[calc(100vh-14rem)] relative flex flex-col">
+
+        {/* --- GOVERNANCE HUB (SETTINGS) --- */}
+        {activeTab === "SETTINGS" && (
+            <div className="flex-1 flex gap-8 h-full">
+                {/* Pillar 1: Encrypted Key Vault */}
+                <div className="w-1/2 flex flex-col gap-6 overflow-y-auto terminal-scrollbar pr-2">
+                    <div>
+                        <h1 className="font-headline text-4xl font-black uppercase mb-1">SECURE_VAULT</h1>
+                        <p className="font-headline text-[10px] tracking-[0.2em] text-on-surface-variant">AES-256-GCM HARDWARE ENCRYPTION</p>
+                    </div>
+
+                    <div className="bg-surface-container-lowest border border-outline-variant/20 p-6 flex flex-col gap-6 shadow-inner">
+                        {/* OpenAI Key Input */}
+                        <div className="flex flex-col gap-2">
+                            <div className="flex justify-between items-center">
+                                <label className="text-[10px] font-mono text-secondary-container tracking-widest font-bold">OPENAI_API_KEY</label>
+                                <span className={`text-[9px] font-bold tracking-widest ${keyStatus.openai === 'SEALED' ? 'text-primary-container' : keyStatus.openai === 'FAILED' ? 'text-error' : 'text-on-surface-variant'}`}>
+                                    [{keyStatus.openai}]
+                                </span>
+                            </div>
+                            <div className="flex gap-2">
+                                <input
+                                    type="password"
+                                    value={keys.openai}
+                                    onChange={(e) => setKeys(prev => ({...prev, openai: e.target.value}))}
+                                    placeholder="sk-proj-..."
+                                    className="flex-1 bg-[#1a1a1c] border border-outline-variant/30 focus:border-secondary-container text-on-surface font-mono text-[12px] p-3 outline-none"
+                                />
+                                <button
+                                    onClick={() => handleSaveKey('openai')}
+                                    disabled={!keys.openai || keyStatus.openai === 'ENCRYPTING...'}
+                                    className="bg-secondary-container/10 border border-secondary-container text-secondary-container font-headline font-bold text-[10px] tracking-widest px-6 uppercase hover:bg-secondary-container hover:text-black transition-colors disabled:opacity-30 disabled:cursor-not-allowed">
+                                    SEAL_KEY
+                                </button>
+                            </div>
+                        </div>
+
+                        {/* Anthropic Key Input */}
+                        <div className="flex flex-col gap-2">
+                            <div className="flex justify-between items-center">
+                                <label className="text-[10px] font-mono text-secondary-container tracking-widest font-bold">ANTHROPIC_API_KEY</label>
+                                <span className={`text-[9px] font-bold tracking-widest ${keyStatus.anthropic === 'SEALED' ? 'text-primary-container' : keyStatus.anthropic === 'FAILED' ? 'text-error' : 'text-on-surface-variant'}`}>
+                                    [{keyStatus.anthropic}]
+                                </span>
+                            </div>
+                            <div className="flex gap-2">
+                                <input
+                                    type="password"
+                                    value={keys.anthropic}
+                                    onChange={(e) => setKeys(prev => ({...prev, anthropic: e.target.value}))}
+                                    placeholder="sk-ant-..."
+                                    className="flex-1 bg-[#1a1a1c] border border-outline-variant/30 focus:border-secondary-container text-on-surface font-mono text-[12px] p-3 outline-none"
+                                />
+                                <button
+                                    onClick={() => handleSaveKey('anthropic')}
+                                    disabled={!keys.anthropic || keyStatus.anthropic === 'ENCRYPTING...'}
+                                    className="bg-secondary-container/10 border border-secondary-container text-secondary-container font-headline font-bold text-[10px] tracking-widest px-6 uppercase hover:bg-secondary-container hover:text-black transition-colors disabled:opacity-30 disabled:cursor-not-allowed">
+                                    SEAL_KEY
+                                </button>
+                            </div>
+                        </div>
+
+                        {/* GEMINI Key Input */}
+                        <div className="flex flex-col gap-2">
+                            <div className="flex justify-between items-center">
+                                <label className="text-[10px] font-mono text-secondary-container tracking-widest font-bold">GEMINI_API_KEY</label>
+                                <span className={`text-[9px] font-bold tracking-widest ${keyStatus.gemini === 'SEALED' ? 'text-primary-container' : keyStatus.gemini === 'FAILED' ? 'text-error' : 'text-on-surface-variant'}`}>
+                                    [{keyStatus.gemini}]
+                                </span>
+                            </div>
+                            <div className="flex gap-2">
+                                <input
+                                    type="password"
+                                    value={keys.gemini}
+                                    onChange={(e) => setKeys(prev => ({...prev, gemini: e.target.value}))}
+                                    placeholder="AIzaSy..."
+                                    className="flex-1 bg-[#1a1a1c] border border-outline-variant/30 focus:border-secondary-container text-on-surface font-mono text-[12px] p-3 outline-none"
+                                />
+                                <button
+                                    onClick={() => handleSaveKey('gemini')}
+                                    disabled={!keys.gemini || keyStatus.gemini === 'ENCRYPTING...'}
+                                    className="bg-secondary-container/10 border border-secondary-container text-secondary-container font-headline font-bold text-[10px] tracking-widest px-6 uppercase hover:bg-secondary-container hover:text-black transition-colors disabled:opacity-30 disabled:cursor-not-allowed">
+                                    SEAL_KEY
+                                </button>
+                            </div>
+                        </div>
+
+                        <div className="text-[10px] text-on-surface-variant/50 font-mono mt-4 italic">
+                            * Keys are encrypted instantly. Raw plaintext is purged from memory immediately upon transmission to the Rust core.
+                        </div>
+                    </div>
+                </div>
+
+                {/* Pillar 2: FinOps Governor */}
+                <div className="w-1/2 flex flex-col gap-6">
+                    <div>
+                        <h1 className="font-headline text-4xl font-black uppercase mb-1">FINOPS_GOVERNOR</h1>
+                        <p className="font-headline text-[10px] tracking-[0.2em] text-on-surface-variant">SWARM SPEND LIMITS</p>
+                    </div>
+
+                    <div className="bg-surface-container-lowest border border-outline-variant/20 p-6 shadow-inner flex flex-col h-full">
+                        <div className="flex justify-between items-end mb-8 border-b border-outline-variant/20 pb-4">
+                            <span className="text-[10px] font-mono text-primary-container tracking-widest font-bold">MAX_TASK_BUDGET</span>
+                            <span className="text-3xl font-black text-on-surface font-headline">${budget.toFixed(2)}</span>
+                        </div>
+
+                        <input
+                            type="range"
+                            min="0.01" max="5.00" step="0.01"
+                            value={budget}
+                            onChange={(e) => {
+                                setBudget(parseFloat(e.target.value));
+                                setBudgetStatus("UNSAVED");
+                            }}
+                            className="w-full accent-primary-container mb-8 cursor-pointer"
+                        />
+
+                        <div className="mt-auto flex justify-between items-center">
+                            <span className={`font-mono text-[10px] tracking-widest ${budgetStatus === 'SYNCED' ? 'text-primary-container' : 'text-on-surface-variant animate-pulse'}`}>
+                                STATUS: {budgetStatus}
+                            </span>
+                            <button
+                                onClick={handleSaveBudget}
+                                disabled={budgetStatus === "SYNCED" || budgetStatus === "SYNCING..."}
+                                className="bg-primary-container text-black font-headline font-bold text-[10px] tracking-widest px-8 py-3 uppercase hover:brightness-110 active:scale-95 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-[0_0_15px_rgba(0,243,255,0.4)]">
+                                OVERWRITE_YAML_CONFIG
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        )}
+
+        {/* --- EXISTING TABS (AST, STAGING, WORKSPACE, LOGS) ... --- */}
         {activeTab === "AST_MAPPER" && (
             <>
                 <div className="flex justify-between items-end mb-4">
@@ -335,7 +494,6 @@ export default function App() {
             </>
         )}
 
-        {/* --- THE ASSEMBLY LINE (NEW STAGING TAB) --- */}
         {activeTab === "STAGING" && (
             <div className="flex-1 flex flex-col h-full">
                 <div className="flex justify-between items-end mb-4">
@@ -354,7 +512,6 @@ export default function App() {
                 </div>
 
                 <div className="flex-1 flex gap-4 h-[calc(100%-4rem)] overflow-hidden">
-                    {/* Left Pane: Asset Tree & Quarantine */}
                     <div className="w-1/4 flex flex-col gap-4">
                         <div className="flex-1 bg-surface-container-lowest border border-outline-variant/20 p-4 overflow-y-auto terminal-scrollbar shadow-inner">
                             <h2 className="text-primary-container font-headline font-bold text-[10px] tracking-widest mb-3 border-b border-outline-variant/20 pb-2">GENERATED_ASSETS</h2>
@@ -362,7 +519,7 @@ export default function App() {
                                 <div className="text-on-surface-variant/50 italic font-mono text-[10px]">No generated assets found.</div>
                             ) : renderOutputTree(outputFiles)}
                         </div>
-                        
+
                         <div className="h-1/3 bg-[#1a1111] border border-error/30 p-4 overflow-y-auto terminal-scrollbar shadow-inner flex flex-col">
                             <h2 className="text-error font-headline font-bold text-[10px] tracking-widest mb-3 border-b border-error/20 pb-2 flex justify-between items-center">
                                 QUARANTINE_ZONE
@@ -373,11 +530,7 @@ export default function App() {
                             ) : (
                                 <div className="flex flex-col gap-2 flex-1 overflow-y-auto terminal-scrollbar">
                                     {quarantineFiles.map((qFile, i) => (
-                                        <div 
-                                            key={i} 
-                                            onClick={() => handleLoadFile(qFile.filename, qFile.error_traceback)}
-                                            className={`p-2 border cursor-pointer font-mono text-[10px] transition-all ${activeFilePath === qFile.filename ? 'bg-error/20 border-error' : 'bg-black border-error/30 hover:border-error/60 text-error'}`}
-                                        >
+                                        <div key={i} onClick={() => handleLoadFile(qFile.filename, qFile.error_traceback)} className={`p-2 border cursor-pointer font-mono text-[10px] transition-all ${activeFilePath === qFile.filename ? 'bg-error/20 border-error' : 'bg-black border-error/30 hover:border-error/60 text-error'}`}>
                                             <div className="font-bold flex items-center gap-1">⚠️ {qFile.filename}</div>
                                             <div className="text-error/70 text-[9px] truncate">Failed Attempt {qFile.attempt}</div>
                                         </div>
@@ -387,61 +540,32 @@ export default function App() {
                         </div>
                     </div>
 
-                    {/* Center Pane: Active Editor */}
                     <div className="w-1/2 flex flex-col bg-[#0c0c0e] border border-outline-variant/30 shadow-2xl relative">
                         <div className="bg-[#18181b] p-2 px-4 border-b border-outline-variant/30 flex justify-between items-center">
-                            <span className="text-primary-container font-mono text-[11px] font-bold">
-                                {activeFilePath ? `📝 ${activeFilePath}` : "NO_FILE_SELECTED"}
-                            </span>
-                            <button 
-                                onClick={handleSaveFile}
-                                disabled={!activeFilePath || isSaving}
-                                className={`text-[9px] font-headline tracking-widest px-4 py-1.5 font-bold uppercase transition-all
-                                    ${isSaving ? 'bg-secondary-container text-black' : 'bg-primary-container text-black hover:brightness-110 active:scale-95'}
-                                    disabled:opacity-50 disabled:cursor-not-allowed`}
-                            >
+                            <span className="text-primary-container font-mono text-[11px] font-bold">{activeFilePath ? `📝 ${activeFilePath}` : "NO_FILE_SELECTED"}</span>
+                            <button onClick={handleSaveFile} disabled={!activeFilePath || isSaving} className={`text-[9px] font-headline tracking-widest px-4 py-1.5 font-bold uppercase transition-all ${isSaving ? 'bg-secondary-container text-black' : 'bg-primary-container text-black hover:brightness-110 active:scale-95'} disabled:opacity-50 disabled:cursor-not-allowed`}>
                                 {isSaving ? "SAVING..." : "SAVE_FIX"}
                             </button>
                         </div>
-                        
-                        {/* If there is an active error, show the traceback pinned above the code */}
                         {activeError && (
                             <div className="bg-error/10 border-b border-error/30 p-3 max-h-32 overflow-y-auto terminal-scrollbar">
                                 <span className="text-error font-bold text-[9px] uppercase tracking-widest block mb-1">Swarm Traceback:</span>
                                 <code className="text-error/90 font-mono text-[10px] whitespace-pre-wrap block leading-tight">{activeError}</code>
                             </div>
                         )}
-
-                        <textarea
-                            className="flex-1 bg-transparent p-6 font-mono text-[13px] text-on-surface-variant outline-none resize-none terminal-scrollbar leading-relaxed"
-                            value={activeFileContent}
-                            onChange={(e) => setActiveFileContent(e.target.value)}
-                            spellCheck="false"
-                            placeholder={activeFilePath ? "Loading..." : "Select a generated asset or quarantined file to view/edit code."}
-                            disabled={!activeFilePath}
-                        />
+                        <textarea className="flex-1 bg-transparent p-6 font-mono text-[13px] text-on-surface-variant outline-none resize-none terminal-scrollbar leading-relaxed" value={activeFileContent} onChange={(e) => setActiveFileContent(e.target.value)} spellCheck="false" placeholder={activeFilePath ? "Loading..." : "Select a generated asset or quarantined file to view/edit code."} disabled={!activeFilePath} />
                     </div>
 
-                    {/* Right Pane: Swarm Validation Feed */}
                     <div className="w-1/4 bg-[#08080a] border border-outline-variant/20 p-4 overflow-y-auto terminal-scrollbar flex flex-col shadow-inner">
-                        <h2 className="text-secondary-container font-headline font-bold text-[10px] tracking-widest mb-3 border-b border-outline-variant/20 pb-2 flex justify-between">
-                            SWARM_MONOLOGUE
-                            <span className="animate-pulse text-secondary-container text-lg leading-none">●</span>
-                        </h2>
-                        
+                        <h2 className="text-secondary-container font-headline font-bold text-[10px] tracking-widest mb-3 border-b border-outline-variant/20 pb-2 flex justify-between">SWARM_MONOLOGUE<span className="animate-pulse text-secondary-container text-lg leading-none">●</span></h2>
                         <div className="space-y-3 mt-2">
                             {validationLogs.length === 0 ? (
                                 <div className="text-on-surface-variant/50 italic font-mono text-[10px]">Awaiting telemetry...</div>
                             ) : (
                                 validationLogs.map((log, i) => (
                                     <div key={i} className={`font-mono text-[10px] bg-white/5 p-2 border-l-2 ${log.status === 'error' ? 'border-error' : 'border-secondary-container/50'}`}>
-                                        <div className="opacity-70 mb-1 flex justify-between">
-                                            <span className="text-on-surface-variant">[{log.time}]</span>
-                                            <span className={`font-bold ${log.status === 'error' ? 'text-error' : 'text-secondary-container'}`}>{log.agent}</span>
-                                        </div>
-                                        <div className={log.status === 'error' ? 'text-error' : 'text-primary-container'}>
-                                            {log.action}
-                                        </div>
+                                        <div className="opacity-70 mb-1 flex justify-between"><span className="text-on-surface-variant">[{log.time}]</span><span className={`font-bold ${log.status === 'error' ? 'text-error' : 'text-secondary-container'}`}>{log.agent}</span></div>
+                                        <div className={log.status === 'error' ? 'text-error' : 'text-primary-container'}>{log.action}</div>
                                     </div>
                                 ))
                             )}
@@ -452,7 +576,6 @@ export default function App() {
             </div>
         )}
 
-        {/* --- ORIGINAL TABS --- */}
         {activeTab === "LOGS" && (
             <div className="flex-1 flex flex-col h-full">
                 <div className="flex justify-between items-end mb-4">
@@ -462,10 +585,7 @@ export default function App() {
                 <div className="flex-1 overflow-y-auto bg-surface-container-lowest p-6 font-mono text-[11px] space-y-4">
                     {forensicLogs.map((log, i) => (
                         <div key={i} className="border-b border-outline-variant/20 pb-4 mb-2">
-                            <div className="flex gap-4 text-on-surface-variant mb-2">
-                                <span>[{new Date(log.timestamp).toLocaleString()}]</span> <span>ID: {log.trace_id}</span>
-                                <span className="text-primary-container font-bold">{log.agent_name}</span>
-                            </div>
+                            <div className="flex gap-4 text-on-surface-variant mb-2"><span>[{new Date(log.timestamp).toLocaleString()}]</span> <span>ID: {log.trace_id}</span><span className="text-primary-container font-bold">{log.agent_name}</span></div>
                             <div className={`text-sm ${log.status === 'error' ? 'text-error' : 'text-on-surface'}`}>{log.action}</div>
                             {log.logs && <pre className="mt-3 p-4 bg-[#08080a] text-secondary-container">{log.logs}</pre>}
                         </div>
@@ -483,69 +603,27 @@ export default function App() {
                             <p className="font-headline text-[10px] tracking-[0.2em] text-on-surface-variant">MANUAL_PRUNING_REQUIRED</p>
                         </div>
                     </div>
-
                     {workspaceFiles.length > 0 && (
                         <div className="flex gap-4 mb-4 bg-surface-container-lowest p-3 border border-outline-variant/20 shadow-sm items-center justify-between">
                             <div className="flex items-center gap-3">
-                                <span className="text-[10px] font-mono text-on-surface-variant tracking-widest">
-                                    {selectedPaths.size} SELECTED
-                                </span>
-                                <button 
-                                    onClick={handleDeleteSelected}
-                                    disabled={selectedPaths.size === 0 || isDeleting}
-                                    className="bg-error/20 text-error border border-error/50 font-headline font-bold text-[10px] tracking-widest px-4 py-2 uppercase transition-all hover:bg-error hover:text-white disabled:opacity-30 active:scale-95">
-                                    {isDeleting ? "DELETING..." : "DELETE SELECTED"}
-                                </button>
+                                <span className="text-[10px] font-mono text-on-surface-variant tracking-widest">{selectedPaths.size} SELECTED</span>
+                                <button onClick={handleDeleteSelected} disabled={selectedPaths.size === 0 || isDeleting} className="bg-error/20 text-error border border-error/50 font-headline font-bold text-[10px] tracking-widest px-4 py-2 uppercase transition-all hover:bg-error hover:text-white disabled:opacity-30 active:scale-95">{isDeleting ? "DELETING..." : "DELETE SELECTED"}</button>
                             </div>
-                            
-                            <button 
-                                onClick={handleGenerateWorkspaceMap}
-                                disabled={isMapping}
-                                className="bg-primary-container text-[#131315] font-headline font-black text-[12px] tracking-widest px-6 py-2 uppercase transition-all hover:brightness-110 active:scale-95 disabled:opacity-50 shadow-[0_0_15px_rgba(0,243,255,0.4)]">
-                                {isMapping ? "MAPPING..." : "GENERATE AST MAP"}
-                            </button>
+                            <button onClick={handleGenerateWorkspaceMap} disabled={isMapping} className="bg-primary-container text-[#131315] font-headline font-black text-[12px] tracking-widest px-6 py-2 uppercase transition-all hover:brightness-110 active:scale-95 disabled:opacity-50 shadow-[0_0_15px_rgba(0,243,255,0.4)]">{isMapping ? "MAPPING..." : "GENERATE AST MAP"}</button>
                         </div>
                     )}
-
                     <div className="flex-1 overflow-y-auto bg-surface-container-lowest border border-outline-variant/20 p-4 terminal-scrollbar">
-                        {workspaceFiles.length === 0 ? (
-                            <div className="text-on-surface-variant/50 italic font-mono text-[11px]">Workspace is empty. Drop a ZIP to begin.</div>
-                        ) : renderWorkspaceTree(workspaceFiles)}
+                        {workspaceFiles.length === 0 ? <div className="text-on-surface-variant/50 italic font-mono text-[11px]">Workspace is empty. Drop a ZIP to begin.</div> : renderWorkspaceTree(workspaceFiles)}
                     </div>
                 </div>
-
                 <div className="w-1/2 flex flex-col">
                     <div className="mb-4">
                         <h1 className="font-headline text-4xl font-black mb-1">INTAKE_FORGE</h1>
                         <p className="font-headline text-[10px] tracking-[0.2em] text-on-surface-variant">AIR_GAPPED_EXTRACTION</p>
                     </div>
-                    <div 
-                        onDragOver={(e) => {e.preventDefault(); setIsDragging(true);}}
-                        onDragLeave={() => setIsDragging(false)}
-                        onDrop={handleDrop}
-                        className={`flex-1 flex flex-col items-center justify-center border-2 border-dashed transition-all ${isDragging ? 'border-primary-container bg-primary-container/10' : 'border-outline-variant/50 bg-surface-container-lowest'} ${isUploading ? 'opacity-50' : ''}`}
-                    >
-                        {isUploading ? (
-                            <div className="text-center animate-pulse">
-                                <h2 className="font-headline text-lg font-bold text-primary-container uppercase">Extracting...</h2>
-                            </div>
-                        ) : (
-                            <div className="text-center pointer-events-none">
-                                <div className="text-outline-variant text-4xl mb-4">📥</div>
-                                <h2 className="font-headline text-lg font-bold text-on-surface-variant uppercase tracking-widest">Drop Codebase (.ZIP)</h2>
-                            </div>
-                        )}
+                    <div onDragOver={(e) => {e.preventDefault(); setIsDragging(true);}} onDragLeave={() => setIsDragging(false)} onDrop={handleDrop} className={`flex-1 flex flex-col items-center justify-center border-2 border-dashed transition-all ${isDragging ? 'border-primary-container bg-primary-container/10' : 'border-outline-variant/50 bg-surface-container-lowest'} ${isUploading ? 'opacity-50' : ''}`}>
+                        {isUploading ? <div className="text-center animate-pulse"><h2 className="font-headline text-lg font-bold text-primary-container uppercase">Extracting...</h2></div> : <div className="text-center pointer-events-none"><div className="text-outline-variant text-4xl mb-4">📥</div><h2 className="font-headline text-lg font-bold text-on-surface-variant uppercase tracking-widest">Drop Codebase (.ZIP)</h2></div>}
                     </div>
-                </div>
-            </div>
-        )}
-
-        {["SETTINGS"].includes(activeTab) && (
-            <div className="flex-1 flex items-center justify-center border-2 border-dashed border-outline-variant/30 bg-surface-container-lowest/50">
-                <div className="text-center">
-                    <div className="text-primary-container text-4xl mb-4 opacity-50">🚧</div>
-                    <h2 className="font-headline text-xl font-bold text-on-surface-variant uppercase tracking-widest">MODULE_UNDER_CONSTRUCTION</h2>
-                    <p className="font-mono text-[10px] text-outline-variant mt-2 uppercase tracking-widest">Awaiting Phase 4 Deployment...</p>
                 </div>
             </div>
         )}

@@ -44,7 +44,10 @@ async def run_in_workspace(payload: RunRequest, authorized: bool = Depends(verif
     if not host_workspace:
         host_workspace = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../staging/workspace"))
 
-    cmd = [payload.entrypoint]
+        if payload.code:
+            cmd = ["-c", payload.code]
+        else:
+            cmd = [payload.entrypoint]
 
     try:
         container_output = client.containers.run(
