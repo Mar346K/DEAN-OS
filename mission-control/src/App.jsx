@@ -157,6 +157,22 @@ export default function App() {
       } catch (err) { setBudgetStatus("FAILED"); }
   };
 
+  // --- BRUTE FORCE HANDLERS ---
+  const handlePurge = async () => {
+      try {
+          await fetch("http://127.0.0.1:8000/staging/purge", { method: "POST" });
+          fetchOutputTree();
+          setActiveFilePath(null);
+          setActiveFileContent("");
+      } catch (err) {}
+  };
+
+  const handleKill = async () => {
+      try {
+          await fetch("http://127.0.0.1:8000/staging/kill", { method: "POST" });
+      } catch (err) {}
+  };
+
   const handleDrop = async (e) => {
     e.preventDefault();
     setIsDragging(false);
@@ -501,7 +517,14 @@ export default function App() {
                         <h1 className="font-headline text-4xl font-black text-on-surface tracking-tighter uppercase mb-1">ASSEMBLY_LINE</h1>
                         <p className="font-headline text-[10px] tracking-[0.2em] text-on-surface-variant uppercase">SWARM_ORCHESTRATION_AND_QA</p>
                     </div>
-                    <div className="flex gap-4">
+                    <div className="flex gap-3">
+                        <button onClick={handlePurge} className="bg-error/10 border border-error text-error font-headline font-bold text-[10px] tracking-widest px-4 py-2 uppercase hover:bg-error hover:text-black transition-colors">
+                            PURGE ASSETS
+                        </button>
+                        <button onClick={handleKill} className="bg-error/10 border border-error text-error font-headline font-bold text-[10px] tracking-widest px-4 py-2 uppercase hover:bg-error hover:text-black transition-colors">
+                            KILL SWARM
+                        </button>
+                        <div className="w-px h-8 bg-outline-variant/50 mx-2 self-center"></div>
                         <button onClick={fetchOutputTree} className="border border-outline-variant px-6 py-2 text-[10px] font-headline font-bold text-on-surface-variant hover:text-white uppercase tracking-widest transition-colors">
                             REFRESH ASSETS
                         </button>

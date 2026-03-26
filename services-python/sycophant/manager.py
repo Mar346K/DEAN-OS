@@ -161,11 +161,11 @@ async def ingest_zip(file: UploadFile = File(...)):
     safe_filename = os.path.basename(file.filename)
     file_path = os.path.join(workspace_dir, safe_filename)
     with open(file_path, "wb") as buffer: shutil.copyfileobj(file.file, buffer)
-    
+
     oubliette_host = os.getenv("OUBLIETTE_HOST", "127.0.0.1")
     secret = os.getenv("DAEN_INTERNAL_SECRET", "daen-internal-dev-secret-2026")
     token = valkyrie_crypto.forge_token("intake-forge", "analyzer", secret)
-    
+
     async with httpx.AsyncClient() as client:
         try:
             await client.post(f"http://{oubliette_host}:8002/extract", json={"filename": safe_filename}, headers={"Authorization": f"Bearer {token}"}, timeout=30.0)
@@ -176,19 +176,22 @@ async def ingest_zip(file: UploadFile = File(...)):
     return {"status": "success"}
 
 # --- PHASE 3: ASSEMBLY LINE & OUTPUT ENDPOINTS ---
+
 @app.get("/output/tree")
 async def get_output_tree():
-    output_dir = os.path.abspath("/app/staging/output")
-    os.makedirs(output_dir, exist_ok=True)
-    return _scan_directory(output_dir)
+    # [FIX] Pointed UI to where the agents actually write the code
+    workspace_dir = os.path.abspath("/app/staging/workspace")
+    os.makedirs(workspace_dir, exist_ok=True)
+    return _scan_directory(workspace_dir)
 
 @app.post("/file/read")
 async def read_file(payload: dict):
     target_path = payload.get("path")
     if not target_path or ".." in target_path: return {"status": "error"}
-    output_dir = os.path.abspath("/app/staging/output")
-    full_path = os.path.abspath(os.path.join(output_dir, target_path))
-    if not full_path.startswith(output_dir): return {"status": "error"}
+    # [FIX] Pointed UI to where the agents actually write the code
+    workspace_dir = os.path.abspath("/app/staging/workspace")
+    full_path = os.path.abspath(os.path.join(workspace_dir, target_path))
+    if not full_path.startswith(workspace_dir): return {"status": "error"}
     try:
         with open(full_path, "r", encoding="utf-8") as f: return {"status": "success", "content": f.read()}
     except Exception as e: return {"status": "error", "message": str(e)}
@@ -198,27 +201,64 @@ async def write_file(payload: dict):
     target_path = payload.get("path")
     content = payload.get("content", "")
     if not target_path or ".." in target_path: return {"status": "error"}
-    
-    output_dir = os.path.abspath("/app/staging/output")
-    full_path = os.path.abspath(os.path.join(output_dir, target_path))
-    if not full_path.startswith(output_dir): return {"status": "error"}
-    
+    # [FIX] Pointed UI to where the agents actually write the code
+    workspace_dir = os.path.abspath("/app/staging/workspace")
+    full_path = os.path.abspath(os.path.join(workspace_dir, target_path))
+    if not full_path.startswith(workspace_dir): return {"status": "error"}
     try:
-        # [NEW] Create directories if the Swarm forgot to make them
         os.makedirs(os.path.dirname(full_path), exist_ok=True)
-        with open(full_path, "w", encoding="utf-8") as f: 
-            f.write(content)
+        with open(full_path, "w", encoding="utf-8") as f: f.write(content)
         return {"status": "success"}
-    except Exception as e: 
-        return {"status": "error", "message": str(e)}
+    except Exception as e: return {"status": "error", "message": str(e)}
 
 @app.post("/output/map")
 async def trigger_output_map():
-    output_dir = "/app/staging/output"
-    os.makedirs(output_dir, exist_ok=True)
-    mapper = ProjectMapper(output_dir)
+    workspace_dir = "/app/staging/workspace"
+    os.makedirs(workspace_dir, exist_ok=True)
+    mapper = ProjectMapper(workspace_dir)
     await manager.broadcast({"type": "ast_map", "payload": mapper.generate_ui_graph()})
     return {"status": "success"}
+
+# --- THE BRUTE FORCE CONTROLS ---
+
+@app.post("/staging/purge")
+async def purge_staging():
+    """Violently deletes all files in the staging workspace."""
+    workspace_dir = os.path.abspath("/app/staging/workspace")
+    try:
+        for item in os.listdir(workspace_dir):
+            item_path = os.path.join(workspace_dir, item)
+            if os.path.isdir(item_path): shutil.rmtree(item_path)
+            else: os.remove(item_path)
+
+        await manager.broadcast({
+            "type": "staging_log",
+            "payload": {"type": "system", "text": "--- STAGING WORKSPACE PURGED ---"}
+        })
+        return {"status": "success"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@app.post("/staging/kill")
+async def kill_swarm():
+    """Flushes the Redis message broker, instantly killing all queued Celery agent tasks."""
+    try:
+        redis_host = os.getenv("REDIS_HOST", "redis")
+        redis_client = aioredis.from_url(f"redis://{redis_host}:6379/0", decode_responses=True)
+        await redis_client.flushdb() # The nuclear option
+
+        await manager.broadcast({
+            "type": "agent_trace",
+            "payload": {
+                "trace_id": "SYS-KILL",
+                "agent": "Manager",
+                "action": "💀 BRUTE FORCE KILL: Redis Queues Flushed. Swarm Halted.",
+                "status": "error"
+            }
+        })
+        return {"status": "success"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 # --- HITL RESOLUTION ENDPOINT ---
 @app.post("/hitl/resolve")
@@ -226,7 +266,7 @@ async def resolve_hitl(payload: dict):
     """Called when the user saves a fix for a quarantined file."""
     filename = payload.get("filename", "unknown")
     logger.info(f"HITL override submitted for {filename}")
-    
+
     # Broadcast to the Swarm Monologue that the human has intervened
     await manager.broadcast({
         "type": "staging_log",
@@ -235,9 +275,46 @@ async def resolve_hitl(payload: dict):
             "text": f"--- HITL FIX APPLIED TO {filename}. WAKING SWARM... ---"
         }
     })
-    
+
     # In the future, this is where we will publish back to Redis to unblock the halted agent workflow!
     return {"status": "success"}
+
+# --- PHASE 4: GOVERNANCE HUB ENDPOINTS ---
+
+@app.post("/settings/keys")
+async def save_api_key(payload: dict):
+    provider = payload.get("provider")
+    api_key = payload.get("api_key")
+    if not provider or not api_key:
+        return {"status": "error", "message": "Missing key data"}
+
+    secret = os.getenv("DAEN_INTERNAL_SECRET", "daen-internal-dev-secret-2026")
+
+    # Pass directly into the Rust memory space for AES-256 encryption
+    success = valkyrie_crypto.seal_key(provider, api_key, secret)
+
+    if success:
+        # Create an audit log of the security change
+        logger.info(f"[SECURITY] {provider} API key successfully vaulted.")
+        return {"status": "success", "message": f"{provider} key sealed."}
+    return {"status": "error", "message": "Vault encryption failed."}
+
+@app.post("/settings/budget")
+async def update_budget(payload: dict):
+    limit = payload.get("limit", 1.00)
+    budget_path = os.path.abspath("/app/infrastructure/budget.yaml")
+
+    try:
+        # Dynamically overwrite the FinOps config
+        with open(budget_path, "w", encoding="utf-8") as f:
+            f.write("# DEAN-OS Operational Budget Guardrails\n")
+            f.write("# Valkyrie will terminate any trace_id that exceeds this cap.\n")
+            f.write(f"task_limit_usd: {float(limit):.2f}\n")
+
+        logger.info(f"[FINOPS] Budget limit updated to ${float(limit):.2f}")
+        return {"status": "success"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 if __name__ == "__main__":
     import uvicorn
