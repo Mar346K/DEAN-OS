@@ -3,13 +3,17 @@ import ReactFlow, { Background, Controls } from 'reactflow';
 import 'reactflow/dist/style.css';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState("AST_MAPPER");
-  const [forensicLogs, setForensicLogs] = useState([]);
+  const [activeTab, setActiveTab] = useState("AST_MAPPER"); 
+  const [forensicLogs, setForensicLogs] = useState([]); 
   const [workspaceFiles, setWorkspaceFiles] = useState([]);
-
+  
+  // New State for Checkboxes
+  const [selectedPaths, setSelectedPaths] = useState(new Set());
+  
   const [isDragging, setIsDragging] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [isMapping, setIsMapping] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   const [telemetry, setTelemetry] = useState({
     status: "STANDBY", cpu_usage_percent: 0, ram_usage_percent: 0, vram_usage_percent: 0, gpu_temp_c: 0
@@ -58,21 +62,21 @@ export default function App() {
           setIsMapping(false);
           const formattedNodes = msg.payload.nodes.map((n, i) => ({
             id: n.id,
-            position: { x: 250 * (i % 3), y: 100 * Math.floor(i / 3) },
-            data: { label: `${n.id} \n(Churn: ${n.churn_score})` },
+            position: { x: 300 * (i % 3), y: 150 * Math.floor(i / 3) },
+            data: { label: `${n.id}\n(Churn: ${n.churn_score})` },
             style: {
-                background: '#131315', padding: '10px',
+                background: '#131315', padding: '15px',
                 color: n.churn_score > 3 ? '#fe00fe' : '#00f3ff',
                 border: `2px solid ${n.churn_score > 3 ? '#fe00fe' : '#00f3ff'}`,
                 borderRadius: '0px',
                 boxShadow: n.churn_score > 3 ? '0 0 15px rgba(254, 0, 254, 0.3)' : '0 0 15px rgba(0, 243, 255, 0.3)',
-                fontFamily: 'Space Grotesk', fontSize: '10px', fontWeight: 'bold'
+                fontFamily: 'Space Grotesk', fontSize: '12px', fontWeight: 'bold'
             }
           }));
           setAstNodes(formattedNodes);
           setAstEdges(msg.payload.edges.map((e, i) => ({
-            id: `e${i}`, source: e.source, target: e.target, animated: true,
-            style: { stroke: '#00f3ff', strokeWidth: 1.5 }
+            id: `e${i}`, source: e.source, target: e.target, animated: true, 
+            style: { stroke: '#00f3ff', strokeWidth: 2 }
           })));
           setActiveTab("AST_MAPPER");
           break;
@@ -89,7 +93,7 @@ export default function App() {
     setIsDragging(false);
     const files = e.dataTransfer.files;
     if (files.length === 0) return;
-
+    
     setIsUploading(true);
     const formData = new FormData();
     formData.append("file", files[0]);
@@ -97,25 +101,53 @@ export default function App() {
     try {
         const res = await fetch("http://127.0.0.1:8000/ingest", { method: "POST", body: formData });
         const result = await res.json();
-        if(result.status === "success") fetchWorkspace();
-    } catch (err) { alert("Failed to connect to Intake Forge."); }
+        if(result.status === "success") {
+            setSelectedPaths(new Set()); // Reset selections on new drop
+            fetchWorkspace();
+        }
+    } catch (err) { alert("Failed to connect to Intake Forge."); } 
     finally { setIsUploading(false); }
   };
 
-  const handleDelete = async (path) => {
-      try {
-          await fetch("http://127.0.0.1:8000/workspace/delete", {
-              method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path })
-          });
-          fetchWorkspace();
-      } catch (err) {}
+  // --- NEW BULK ACTION HANDLERS ---
+  const handleToggleSelect = (path) => {
+    const newSet = new Set(selectedPaths);
+    if (newSet.has(path)) {
+        newSet.delete(path);
+    } else {
+        newSet.add(path);
+    }
+    setSelectedPaths(newSet);
+  };
+
+  const handleDeleteSelected = async () => {
+    const pathsToDelete = Array.from(selectedPaths);
+    if (pathsToDelete.length === 0) return;
+
+    setIsDeleting(true);
+    try {
+        // Sequentially delete to avoid API race conditions
+        for (const path of pathsToDelete) {
+            await fetch("http://127.0.0.1:8000/workspace/delete", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ path })
+            });
+        }
+        setSelectedPaths(new Set()); // Clear selections
+        fetchWorkspace();
+    } catch (err) {
+        console.error("Bulk delete failed", err);
+    } finally {
+        setIsDeleting(false);
+    }
   };
 
   const handleGenerateMap = async () => {
       setIsMapping(true);
       try {
           await fetch("http://127.0.0.1:8000/workspace/map", { method: "POST" });
-      } catch (err) {
+      } catch (err) { 
           setIsMapping(false);
       }
   };
@@ -142,18 +174,18 @@ export default function App() {
   const renderTree = (nodes) => {
     return nodes.map((node, i) => (
       <div key={i} className="ml-4 mt-2">
-        <div className="flex items-center justify-between gap-2 font-mono text-[11px] bg-surface-container-low/50 p-1 border border-outline-variant/10">
-          <span className={node.type === "folder" ? "text-secondary-container" : "text-primary-container"}>
+        <div className="flex items-center gap-3 font-mono text-[12px] bg-[#1a1a1c] p-1.5 border border-outline-variant/10 rounded-sm mb-1 hover:bg-[#222225] transition-colors">
+          <input 
+            type="checkbox" 
+            checked={selectedPaths.has(node.path)}
+            onChange={() => handleToggleSelect(node.path)}
+            className="w-4 h-4 accent-primary-container cursor-pointer"
+          />
+          <span className={node.type === "folder" ? "text-secondary-container font-bold" : "text-primary-container"}>
             {node.type === "folder" ? "📁" : "📄"} {node.name}
           </span>
-          {/* Always visible delete button for mobile/touch users */}
-          <button
-            onClick={() => handleDelete(node.path)}
-            className="text-error border border-error/50 px-2 py-1 text-[8px] uppercase tracking-widest bg-black hover:bg-error/20 active:scale-95 transition-all">
-            🗑️ DELETE
-          </button>
         </div>
-        {node.children && <div className="border-l border-outline-variant/30 ml-2 pl-2">{renderTree(node.children)}</div>}
+        {node.children && <div className="border-l-2 border-outline-variant/20 ml-2 pl-3">{renderTree(node.children)}</div>}
       </div>
     ));
   };
@@ -194,7 +226,7 @@ export default function App() {
               <button onClick={async () => {
                       if (!promptInput) return;
                       await fetch("http://127.0.0.1:8000/build", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt: promptInput }) });
-                      setPromptInput("");
+                      setPromptInput(""); 
                   }} className="w-full py-3 bg-gradient-to-r from-primary to-primary-container text-on-primary font-headline font-bold text-[10px] tracking-widest uppercase hover:brightness-110 active:scale-95">
                   DEPLOY_AGENT
               </button>
@@ -249,16 +281,32 @@ export default function App() {
                             <h1 className="font-headline text-4xl font-black uppercase mb-1">PRODUCTION_ENV</h1>
                             <p className="font-headline text-[10px] tracking-[0.2em] text-on-surface-variant">MANUAL_PRUNING_REQUIRED</p>
                         </div>
-                        {/* Generate Map Button - Now ALWAYS visible if files exist */}
-                        {workspaceFiles.length > 0 && (
-                            <button
+                    </div>
+
+                    {/* NEW ACTION BAR FOR CHECKBOXES */}
+                    {workspaceFiles.length > 0 && (
+                        <div className="flex gap-4 mb-4 bg-surface-container-lowest p-3 border border-outline-variant/20 shadow-sm items-center justify-between">
+                            <div className="flex items-center gap-3">
+                                <span className="text-[10px] font-mono text-on-surface-variant tracking-widest">
+                                    {selectedPaths.size} SELECTED
+                                </span>
+                                <button 
+                                    onClick={handleDeleteSelected}
+                                    disabled={selectedPaths.size === 0 || isDeleting}
+                                    className="bg-error/20 text-error border border-error/50 font-headline font-bold text-[10px] tracking-widest px-4 py-2 uppercase transition-all hover:bg-error hover:text-white disabled:opacity-30 active:scale-95">
+                                    {isDeleting ? "DELETING..." : "DELETE SELECTED"}
+                                </button>
+                            </div>
+                            
+                            <button 
                                 onClick={handleGenerateMap}
                                 disabled={isMapping}
-                                className="bg-primary-container text-black font-headline font-black text-[12px] tracking-widest px-8 py-4 uppercase transition-all hover:brightness-110 active:scale-95 shadow-[0_0_20px_rgba(0,243,255,0.6)] border-2 border-primary-container">
+                                className="bg-primary-container text-[#131315] font-headline font-black text-[12px] tracking-widest px-6 py-2 uppercase transition-all hover:brightness-110 active:scale-95 disabled:opacity-50 shadow-[0_0_15px_rgba(0,243,255,0.4)]">
                                 {isMapping ? "MAPPING..." : "GENERATE AST MAP"}
                             </button>
-                        )}
-                    </div>
+                        </div>
+                    )}
+
                     <div className="flex-1 overflow-y-auto bg-surface-container-lowest border border-outline-variant/20 p-4 terminal-scrollbar">
                         {workspaceFiles.length === 0 ? (
                             <div className="text-on-surface-variant/50 italic font-mono text-[11px]">Workspace is empty. Drop a ZIP to begin.</div>
@@ -271,7 +319,7 @@ export default function App() {
                         <h1 className="font-headline text-4xl font-black mb-1">INTAKE_FORGE</h1>
                         <p className="font-headline text-[10px] tracking-[0.2em] text-on-surface-variant">AIR_GAPPED_EXTRACTION</p>
                     </div>
-                    <div
+                    <div 
                         onDragOver={(e) => {e.preventDefault(); setIsDragging(true);}}
                         onDragLeave={() => setIsDragging(false)}
                         onDrop={handleDrop}
@@ -297,7 +345,7 @@ export default function App() {
                 <div className="text-center">
                     <div className="text-primary-container text-4xl mb-4 opacity-50">🚧</div>
                     <h2 className="font-headline text-xl font-bold text-on-surface-variant uppercase tracking-widest">MODULE_UNDER_CONSTRUCTION</h2>
-                    <p className="font-mono text-[10px] text-outline-variant mt-2 uppercase tracking-widest">Awaiting deployment...</p>
+                    <p className="font-mono text-[10px] text-outline-variant mt-2 uppercase tracking-widest">Awaiting deployment for Phase {activeTab === "STAGING" ? 3 : 4}...</p>
                 </div>
             </div>
         )}
