@@ -11,7 +11,7 @@ python_exe = venv_python if os.path.exists(venv_python) else sys.executable
 SERVICES = {
     "memory": [python_exe, "services-python/mnemosyne/app.py"],
     "sandbox": [python_exe, "services-python/oubliette/app.py"],
-    "telemetry": [os.path.abspath("target/debug/aethelgard.exe")],
+    "host_telemetry": [python_exe, "infrastructure/host_telemetry.py"], # <-- NEW
     "manager": [python_exe, "services-python/sycophant/manager.py"]  # <-- ADD THIS LINE
 }
 
