@@ -3,27 +3,33 @@ import ReactFlow, { Background, Controls } from 'reactflow';
 import 'reactflow/dist/style.css';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState("AST_MAPPER"); 
+  const [activeTab, setActiveTab] = useState("STAGING"); 
   const [forensicLogs, setForensicLogs] = useState([]); 
   const [workspaceFiles, setWorkspaceFiles] = useState([]);
-  
-  // New State for Checkboxes
   const [selectedPaths, setSelectedPaths] = useState(new Set());
-  
   const [isDragging, setIsDragging] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [isMapping, setIsMapping] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
 
+  // --- ASSEMBLY LINE / STAGING STATE ---
+  const [outputFiles, setOutputFiles] = useState([]);
+  const [activeFilePath, setActiveFilePath] = useState(null);
+  const [activeFileContent, setActiveFileContent] = useState("");
+  const [activeError, setActiveError] = useState(null); // Holds the traceback for the current file
+  const [isSaving, setIsSaving] = useState(false);
+  
+  const [validationLogs, setValidationLogs] = useState([]);
+  const [quarantineFiles, setQuarantineFiles] = useState([]); // List of HITL alerts
+  const validationLogEndRef = useRef(null);
+
   const [telemetry, setTelemetry] = useState({
     status: "STANDBY", cpu_usage_percent: 0, ram_usage_percent: 0, vram_usage_percent: 0, gpu_temp_c: 0
   });
   const [traceLogs, setTraceLogs] = useState([]);
-  const [hitlAlert, setHitlAlert] = useState(null);
   const [astNodes, setAstNodes] = useState([]);
   const [astEdges, setAstEdges] = useState([]);
   const [promptInput, setPromptInput] = useState("");
-
   const traceEndRef = useRef(null);
 
   const fetchLogs = async () => {
@@ -42,9 +48,18 @@ export default function App() {
     } catch (err) {}
   };
 
+  const fetchOutputTree = async () => {
+    try {
+      const res = await fetch("http://127.0.0.1:8000/output/tree");
+      const data = await res.json();
+      setOutputFiles(data);
+    } catch (err) {}
+  };
+
   useEffect(() => {
     if (activeTab === "LOGS") fetchLogs();
     if (activeTab === "WORKSPACE") fetchWorkspace();
+    if (activeTab === "STAGING") fetchOutputTree();
   }, [activeTab]);
 
   useEffect(() => {
@@ -56,8 +71,28 @@ export default function App() {
         case "agent_trace":
           setTraceLogs(prev => [...prev.slice(-49), msg.payload]);
           if (msg.payload.agent === "Deployer" && msg.payload.status === "success") fetchWorkspace();
+          setValidationLogs(prev => [...prev.slice(-99), {
+              time: new Date().toLocaleTimeString(),
+              agent: msg.payload.agent,
+              action: msg.payload.action,
+              status: msg.payload.status
+          }]);
           break;
-        case "hitl_alert": setHitlAlert(msg.payload); break;
+        case "hitl_alert":
+          // Add the file to the Quarantine Zone
+          setQuarantineFiles(prev => {
+              if (prev.find(f => f.filename === msg.payload.filename)) return prev;
+              return [...prev, msg.payload];
+          });
+          break;
+        case "staging_log":
+          setValidationLogs(prev => [...prev.slice(-99), {
+              time: new Date().toLocaleTimeString(),
+              agent: "System",
+              action: msg.payload.text,
+              status: msg.payload.type === "stderr" ? "error" : "info"
+          }]);
+          break;
         case "ast_map":
           setIsMapping(false);
           const formattedNodes = msg.payload.nodes.map((n, i) => ({
@@ -87,69 +122,102 @@ export default function App() {
   }, []);
 
   useEffect(() => { traceEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [traceLogs]);
+  useEffect(() => { validationLogEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [validationLogs]);
 
   const handleDrop = async (e) => {
     e.preventDefault();
     setIsDragging(false);
     const files = e.dataTransfer.files;
     if (files.length === 0) return;
-    
     setIsUploading(true);
     const formData = new FormData();
     formData.append("file", files[0]);
-
     try {
         const res = await fetch("http://127.0.0.1:8000/ingest", { method: "POST", body: formData });
         const result = await res.json();
-        if(result.status === "success") {
-            setSelectedPaths(new Set()); // Reset selections on new drop
-            fetchWorkspace();
-        }
+        if(result.status === "success") { setSelectedPaths(new Set()); fetchWorkspace(); }
     } catch (err) { alert("Failed to connect to Intake Forge."); } 
     finally { setIsUploading(false); }
   };
 
-  // --- NEW BULK ACTION HANDLERS ---
   const handleToggleSelect = (path) => {
     const newSet = new Set(selectedPaths);
-    if (newSet.has(path)) {
-        newSet.delete(path);
-    } else {
-        newSet.add(path);
-    }
+    if (newSet.has(path)) newSet.delete(path);
+    else newSet.add(path);
     setSelectedPaths(newSet);
   };
 
   const handleDeleteSelected = async () => {
     const pathsToDelete = Array.from(selectedPaths);
     if (pathsToDelete.length === 0) return;
-
     setIsDeleting(true);
     try {
-        // Sequentially delete to avoid API race conditions
         for (const path of pathsToDelete) {
             await fetch("http://127.0.0.1:8000/workspace/delete", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ path })
+                method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path })
             });
         }
-        setSelectedPaths(new Set()); // Clear selections
-        fetchWorkspace();
-    } catch (err) {
-        console.error("Bulk delete failed", err);
-    } finally {
-        setIsDeleting(false);
-    }
+        setSelectedPaths(new Set()); fetchWorkspace();
+    } catch (err) {} finally { setIsDeleting(false); }
   };
 
-  const handleGenerateMap = async () => {
+  const handleGenerateWorkspaceMap = async () => {
       setIsMapping(true);
+      try { await fetch("http://127.0.0.1:8000/workspace/map", { method: "POST" }); } 
+      catch (err) { setIsMapping(false); }
+  };
+
+  // --- ASSEMBLY LINE HANDLERS ---
+  const handleLoadFile = async (path, errorTraceback = null) => {
+      setActiveFilePath(path);
+      setActiveError(errorTraceback);
       try {
-          await fetch("http://127.0.0.1:8000/workspace/map", { method: "POST" });
-      } catch (err) { 
-          setIsMapping(false);
-      }
+          const res = await fetch("http://127.0.0.1:8000/file/read", {
+              method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path })
+          });
+          const data = await res.json();
+          if (data.status === "success") {
+              setActiveFileContent(data.content);
+          } else {
+              // [NEW] Handle missing files gracefully for HITL
+              if (data.message && data.message.includes("No such file")) {
+                  setActiveFileContent(`# File '${path}' is missing.\n# Write your code here to create it and rescue the Swarm...`);
+              } else {
+                  setActiveFileContent(`// Error loading file: ${data.message}`);
+              }
+          }
+      } catch (err) { setActiveFileContent("// Failed to connect to backend to read file."); }
+  };
+
+  const handleSaveFile = async () => {
+      if (!activeFilePath) return;
+      setIsSaving(true);
+      try {
+          // 1. Save the code
+          await fetch("http://127.0.0.1:8000/file/write", {
+              method: "POST", headers: { "Content-Type": "application/json" }, 
+              body: JSON.stringify({ path: activeFilePath, content: activeFileContent })
+          });
+
+          // 2. Check if it was quarantined and resolve it
+          const isQuarantined = quarantineFiles.find(f => f.filename === activeFilePath);
+          if (isQuarantined) {
+              await fetch("http://127.0.0.1:8000/hitl/resolve", {
+                  method: "POST", headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ filename: activeFilePath, hint: "Fixed via Active Editor", error_traceback: activeError })
+              });
+              setQuarantineFiles(prev => prev.filter(f => f.filename !== activeFilePath));
+              setActiveError(null);
+          }
+
+          setTimeout(() => setIsSaving(false), 500);
+      } catch (err) { setIsSaving(false); alert("Failed to save file."); }
+  };
+
+  const handleGenerateOutputMap = async () => {
+      setIsMapping(true);
+      try { await fetch("http://127.0.0.1:8000/output/map", { method: "POST" }); } 
+      catch (err) { setIsMapping(false); }
   };
 
   const renderDial = (value, label, isCritical) => {
@@ -171,21 +239,36 @@ export default function App() {
     );
   };
 
-  const renderTree = (nodes) => {
+  const renderWorkspaceTree = (nodes) => {
     return nodes.map((node, i) => (
       <div key={i} className="ml-4 mt-2">
         <div className="flex items-center gap-3 font-mono text-[12px] bg-[#1a1a1c] p-1.5 border border-outline-variant/10 rounded-sm mb-1 hover:bg-[#222225] transition-colors">
           <input 
-            type="checkbox" 
-            checked={selectedPaths.has(node.path)}
-            onChange={() => handleToggleSelect(node.path)}
+            type="checkbox" checked={selectedPaths.has(node.path)} onChange={() => handleToggleSelect(node.path)}
             className="w-4 h-4 accent-primary-container cursor-pointer"
           />
           <span className={node.type === "folder" ? "text-secondary-container font-bold" : "text-primary-container"}>
             {node.type === "folder" ? "📁" : "📄"} {node.name}
           </span>
         </div>
-        {node.children && <div className="border-l-2 border-outline-variant/20 ml-2 pl-3">{renderTree(node.children)}</div>}
+        {node.children && <div className="border-l-2 border-outline-variant/20 ml-2 pl-3">{renderWorkspaceTree(node.children)}</div>}
+      </div>
+    ));
+  };
+
+  const renderOutputTree = (nodes) => {
+    return nodes.map((node, i) => (
+      <div key={i} className="ml-3 mt-1">
+        <div 
+            onClick={() => node.type === "file" && handleLoadFile(node.path, null)}
+            className={`flex items-center gap-2 font-mono text-[11px] p-1.5 border border-outline-variant/10 rounded-sm transition-colors cursor-pointer
+                ${activeFilePath === node.path ? 'bg-primary-container/20 border-primary-container/50' : 'bg-[#1a1a1c] hover:bg-[#222225]'}`
+            }>
+          <span className={node.type === "folder" ? "text-secondary-container font-bold" : "text-primary-container"}>
+            {node.type === "folder" ? "📁" : "📄"} {node.name}
+          </span>
+        </div>
+        {node.children && <div className="border-l border-outline-variant/20 ml-2 pl-2">{renderOutputTree(node.children)}</div>}
       </div>
     ));
   };
@@ -252,6 +335,124 @@ export default function App() {
             </>
         )}
 
+        {/* --- THE ASSEMBLY LINE (NEW STAGING TAB) --- */}
+        {activeTab === "STAGING" && (
+            <div className="flex-1 flex flex-col h-full">
+                <div className="flex justify-between items-end mb-4">
+                    <div>
+                        <h1 className="font-headline text-4xl font-black text-on-surface tracking-tighter uppercase mb-1">ASSEMBLY_LINE</h1>
+                        <p className="font-headline text-[10px] tracking-[0.2em] text-on-surface-variant uppercase">SWARM_ORCHESTRATION_AND_QA</p>
+                    </div>
+                    <div className="flex gap-4">
+                        <button onClick={fetchOutputTree} className="border border-outline-variant px-6 py-2 text-[10px] font-headline font-bold text-on-surface-variant hover:text-white uppercase tracking-widest transition-colors">
+                            REFRESH ASSETS
+                        </button>
+                        <button onClick={handleGenerateOutputMap} disabled={isMapping} className="bg-primary-container text-[#131315] font-headline font-black text-[10px] tracking-widest px-6 py-2 uppercase transition-all hover:brightness-110 active:scale-95 disabled:opacity-50 shadow-[0_0_15px_rgba(0,243,255,0.4)]">
+                            {isMapping ? "MAPPING..." : "MAP GENERATED ARCHITECTURE"}
+                        </button>
+                    </div>
+                </div>
+
+                <div className="flex-1 flex gap-4 h-[calc(100%-4rem)] overflow-hidden">
+                    {/* Left Pane: Asset Tree & Quarantine */}
+                    <div className="w-1/4 flex flex-col gap-4">
+                        <div className="flex-1 bg-surface-container-lowest border border-outline-variant/20 p-4 overflow-y-auto terminal-scrollbar shadow-inner">
+                            <h2 className="text-primary-container font-headline font-bold text-[10px] tracking-widest mb-3 border-b border-outline-variant/20 pb-2">GENERATED_ASSETS</h2>
+                            {outputFiles.length === 0 ? (
+                                <div className="text-on-surface-variant/50 italic font-mono text-[10px]">No generated assets found.</div>
+                            ) : renderOutputTree(outputFiles)}
+                        </div>
+                        
+                        <div className="h-1/3 bg-[#1a1111] border border-error/30 p-4 overflow-y-auto terminal-scrollbar shadow-inner flex flex-col">
+                            <h2 className="text-error font-headline font-bold text-[10px] tracking-widest mb-3 border-b border-error/20 pb-2 flex justify-between items-center">
+                                QUARANTINE_ZONE
+                                <span className="text-[8px] bg-error/20 text-error px-1.5 py-0.5 rounded-sm">{quarantineFiles.length} FILES</span>
+                            </h2>
+                            {quarantineFiles.length === 0 ? (
+                                <div className="text-error/50 italic font-mono text-[10px] mt-4 text-center">No modules currently require HITL intervention.</div>
+                            ) : (
+                                <div className="flex flex-col gap-2 flex-1 overflow-y-auto terminal-scrollbar">
+                                    {quarantineFiles.map((qFile, i) => (
+                                        <div 
+                                            key={i} 
+                                            onClick={() => handleLoadFile(qFile.filename, qFile.error_traceback)}
+                                            className={`p-2 border cursor-pointer font-mono text-[10px] transition-all ${activeFilePath === qFile.filename ? 'bg-error/20 border-error' : 'bg-black border-error/30 hover:border-error/60 text-error'}`}
+                                        >
+                                            <div className="font-bold flex items-center gap-1">⚠️ {qFile.filename}</div>
+                                            <div className="text-error/70 text-[9px] truncate">Failed Attempt {qFile.attempt}</div>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+                    </div>
+
+                    {/* Center Pane: Active Editor */}
+                    <div className="w-1/2 flex flex-col bg-[#0c0c0e] border border-outline-variant/30 shadow-2xl relative">
+                        <div className="bg-[#18181b] p-2 px-4 border-b border-outline-variant/30 flex justify-between items-center">
+                            <span className="text-primary-container font-mono text-[11px] font-bold">
+                                {activeFilePath ? `📝 ${activeFilePath}` : "NO_FILE_SELECTED"}
+                            </span>
+                            <button 
+                                onClick={handleSaveFile}
+                                disabled={!activeFilePath || isSaving}
+                                className={`text-[9px] font-headline tracking-widest px-4 py-1.5 font-bold uppercase transition-all
+                                    ${isSaving ? 'bg-secondary-container text-black' : 'bg-primary-container text-black hover:brightness-110 active:scale-95'}
+                                    disabled:opacity-50 disabled:cursor-not-allowed`}
+                            >
+                                {isSaving ? "SAVING..." : "SAVE_FIX"}
+                            </button>
+                        </div>
+                        
+                        {/* If there is an active error, show the traceback pinned above the code */}
+                        {activeError && (
+                            <div className="bg-error/10 border-b border-error/30 p-3 max-h-32 overflow-y-auto terminal-scrollbar">
+                                <span className="text-error font-bold text-[9px] uppercase tracking-widest block mb-1">Swarm Traceback:</span>
+                                <code className="text-error/90 font-mono text-[10px] whitespace-pre-wrap block leading-tight">{activeError}</code>
+                            </div>
+                        )}
+
+                        <textarea
+                            className="flex-1 bg-transparent p-6 font-mono text-[13px] text-on-surface-variant outline-none resize-none terminal-scrollbar leading-relaxed"
+                            value={activeFileContent}
+                            onChange={(e) => setActiveFileContent(e.target.value)}
+                            spellCheck="false"
+                            placeholder={activeFilePath ? "Loading..." : "Select a generated asset or quarantined file to view/edit code."}
+                            disabled={!activeFilePath}
+                        />
+                    </div>
+
+                    {/* Right Pane: Swarm Validation Feed */}
+                    <div className="w-1/4 bg-[#08080a] border border-outline-variant/20 p-4 overflow-y-auto terminal-scrollbar flex flex-col shadow-inner">
+                        <h2 className="text-secondary-container font-headline font-bold text-[10px] tracking-widest mb-3 border-b border-outline-variant/20 pb-2 flex justify-between">
+                            SWARM_MONOLOGUE
+                            <span className="animate-pulse text-secondary-container text-lg leading-none">●</span>
+                        </h2>
+                        
+                        <div className="space-y-3 mt-2">
+                            {validationLogs.length === 0 ? (
+                                <div className="text-on-surface-variant/50 italic font-mono text-[10px]">Awaiting telemetry...</div>
+                            ) : (
+                                validationLogs.map((log, i) => (
+                                    <div key={i} className={`font-mono text-[10px] bg-white/5 p-2 border-l-2 ${log.status === 'error' ? 'border-error' : 'border-secondary-container/50'}`}>
+                                        <div className="opacity-70 mb-1 flex justify-between">
+                                            <span className="text-on-surface-variant">[{log.time}]</span>
+                                            <span className={`font-bold ${log.status === 'error' ? 'text-error' : 'text-secondary-container'}`}>{log.agent}</span>
+                                        </div>
+                                        <div className={log.status === 'error' ? 'text-error' : 'text-primary-container'}>
+                                            {log.action}
+                                        </div>
+                                    </div>
+                                ))
+                            )}
+                            <div ref={validationLogEndRef} />
+                        </div>
+                    </div>
+                </div>
+            </div>
+        )}
+
+        {/* --- ORIGINAL TABS --- */}
         {activeTab === "LOGS" && (
             <div className="flex-1 flex flex-col h-full">
                 <div className="flex justify-between items-end mb-4">
@@ -283,7 +484,6 @@ export default function App() {
                         </div>
                     </div>
 
-                    {/* NEW ACTION BAR FOR CHECKBOXES */}
                     {workspaceFiles.length > 0 && (
                         <div className="flex gap-4 mb-4 bg-surface-container-lowest p-3 border border-outline-variant/20 shadow-sm items-center justify-between">
                             <div className="flex items-center gap-3">
@@ -299,7 +499,7 @@ export default function App() {
                             </div>
                             
                             <button 
-                                onClick={handleGenerateMap}
+                                onClick={handleGenerateWorkspaceMap}
                                 disabled={isMapping}
                                 className="bg-primary-container text-[#131315] font-headline font-black text-[12px] tracking-widest px-6 py-2 uppercase transition-all hover:brightness-110 active:scale-95 disabled:opacity-50 shadow-[0_0_15px_rgba(0,243,255,0.4)]">
                                 {isMapping ? "MAPPING..." : "GENERATE AST MAP"}
@@ -310,7 +510,7 @@ export default function App() {
                     <div className="flex-1 overflow-y-auto bg-surface-container-lowest border border-outline-variant/20 p-4 terminal-scrollbar">
                         {workspaceFiles.length === 0 ? (
                             <div className="text-on-surface-variant/50 italic font-mono text-[11px]">Workspace is empty. Drop a ZIP to begin.</div>
-                        ) : renderTree(workspaceFiles)}
+                        ) : renderWorkspaceTree(workspaceFiles)}
                     </div>
                 </div>
 
@@ -340,12 +540,12 @@ export default function App() {
             </div>
         )}
 
-        {["STAGING", "SETTINGS"].includes(activeTab) && (
+        {["SETTINGS"].includes(activeTab) && (
             <div className="flex-1 flex items-center justify-center border-2 border-dashed border-outline-variant/30 bg-surface-container-lowest/50">
                 <div className="text-center">
                     <div className="text-primary-container text-4xl mb-4 opacity-50">🚧</div>
                     <h2 className="font-headline text-xl font-bold text-on-surface-variant uppercase tracking-widest">MODULE_UNDER_CONSTRUCTION</h2>
-                    <p className="font-mono text-[10px] text-outline-variant mt-2 uppercase tracking-widest">Awaiting deployment for Phase {activeTab === "STAGING" ? 3 : 4}...</p>
+                    <p className="font-mono text-[10px] text-outline-variant mt-2 uppercase tracking-widest">Awaiting Phase 4 Deployment...</p>
                 </div>
             </div>
         )}

@@ -114,94 +114,130 @@ async def get_forensic_logs(db: AsyncSession = Depends(get_db)):
     ]
 
 # --- PHASE 2.5: INTERACTIVE INTAKE ENDPOINTS ---
+def _scan_directory(base_path):
+    tree = []
+    if not os.path.exists(base_path): return tree
+    for entry in os.scandir(base_path):
+        node = {"name": entry.name, "path": os.path.relpath(entry.path, base_path).replace("\\", "/")}
+        if entry.is_dir():
+            node["type"] = "folder"
+            node["children"] = _scan_directory(entry.path)
+        else:
+            node["type"] = "file"
+        tree.append(node)
+    return sorted(tree, key=lambda x: (x["type"] == "file", x["name"]))
 
 @app.get("/workspace")
 async def get_workspace_tree():
     workspace_dir = os.path.abspath("/app/staging/workspace")
-    def scan_dir(path):
-        tree = []
-        if not os.path.exists(path): return tree
-        for entry in os.scandir(path):
-            node = {"name": entry.name, "path": os.path.relpath(entry.path, workspace_dir).replace("\\", "/")}
-            if entry.is_dir():
-                node["type"] = "folder"
-                node["children"] = scan_dir(entry.path)
-            else:
-                node["type"] = "file"
-            tree.append(node)
-        return sorted(tree, key=lambda x: (x["type"] == "file", x["name"]))
-    return scan_dir(workspace_dir)
+    os.makedirs(workspace_dir, exist_ok=True)
+    return _scan_directory(workspace_dir)
 
 @app.post("/workspace/delete")
 async def delete_workspace_item(payload: dict):
-    """Safely deletes a specific folder or file from the workspace."""
     target_path = payload.get("path")
-    if not target_path or ".." in target_path:
-        return {"status": "error", "message": "Invalid path"}
-
+    if not target_path or ".." in target_path: return {"status": "error", "message": "Invalid path"}
     workspace_dir = os.path.abspath("/app/staging/workspace")
     full_path = os.path.abspath(os.path.join(workspace_dir, target_path))
-
-    if not full_path.startswith(workspace_dir):
-        return {"status": "error", "message": "Path traversal blocked"}
-
+    if not full_path.startswith(workspace_dir): return {"status": "error", "message": "Path traversal blocked"}
     try:
-        if os.path.isdir(full_path):
-            shutil.rmtree(full_path)
-        elif os.path.isfile(full_path):
-            os.remove(full_path)
+        if os.path.isdir(full_path): shutil.rmtree(full_path)
+        elif os.path.isfile(full_path): os.remove(full_path)
         return {"status": "success"}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+    except Exception as e: return {"status": "error", "message": str(e)}
 
 @app.post("/workspace/map")
 async def trigger_ast_map():
-    """Manually triggers the AST Bloom after the user has pruned the workspace."""
     workspace_dir = "/app/staging/workspace"
-    logger.info("[INTAKE FORGE] Generating AST Graph...")
-
     mapper = ProjectMapper(workspace_dir)
     graph_data = mapper.generate_ui_graph()
-
-    await manager.broadcast({
-        "type": "ast_map",
-        "payload": graph_data
-    })
-    return {"status": "success", "message": "Bloom triggered"}
+    await manager.broadcast({"type": "ast_map", "payload": graph_data})
+    return {"status": "success", "message": "Workspace Bloom triggered"}
 
 @app.post("/ingest")
 async def ingest_zip(file: UploadFile = File(...)):
-    """Extracts the zip, but DOES NOT map it yet."""
     workspace_dir = "/app/staging/workspace"
     os.makedirs(workspace_dir, exist_ok=True)
-
     safe_filename = os.path.basename(file.filename)
     file_path = os.path.join(workspace_dir, safe_filename)
-
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-
+    with open(file_path, "wb") as buffer: shutil.copyfileobj(file.file, buffer)
+    
     oubliette_host = os.getenv("OUBLIETTE_HOST", "127.0.0.1")
     secret = os.getenv("DAEN_INTERNAL_SECRET", "daen-internal-dev-secret-2026")
     token = valkyrie_crypto.forge_token("intake-forge", "analyzer", secret)
-
+    
     async with httpx.AsyncClient() as client:
         try:
-            await client.post(
-                f"http://{oubliette_host}:8002/extract",
-                json={"filename": safe_filename},
-                headers={"Authorization": f"Bearer {token}"},
-                timeout=30.0
-            )
-        except Exception:
-            return {"status": "error", "message": "Failed to extract in sandbox"}
-
+            await client.post(f"http://{oubliette_host}:8002/extract", json={"filename": safe_filename}, headers={"Authorization": f"Bearer {token}"}, timeout=30.0)
+        except Exception: return {"status": "error", "message": "Failed to extract in sandbox"}
     if os.path.exists(file_path):
         try: os.remove(file_path)
         except OSError: pass
+    return {"status": "success"}
 
-    # NOTE: We no longer broadcast the ast_map here! The user must click the button.
-    return {"status": "success", "message": "Legacy codebase extracted. Awaiting pruning."}
+# --- PHASE 3: ASSEMBLY LINE & OUTPUT ENDPOINTS ---
+@app.get("/output/tree")
+async def get_output_tree():
+    output_dir = os.path.abspath("/app/staging/output")
+    os.makedirs(output_dir, exist_ok=True)
+    return _scan_directory(output_dir)
+
+@app.post("/file/read")
+async def read_file(payload: dict):
+    target_path = payload.get("path")
+    if not target_path or ".." in target_path: return {"status": "error"}
+    output_dir = os.path.abspath("/app/staging/output")
+    full_path = os.path.abspath(os.path.join(output_dir, target_path))
+    if not full_path.startswith(output_dir): return {"status": "error"}
+    try:
+        with open(full_path, "r", encoding="utf-8") as f: return {"status": "success", "content": f.read()}
+    except Exception as e: return {"status": "error", "message": str(e)}
+
+@app.post("/file/write")
+async def write_file(payload: dict):
+    target_path = payload.get("path")
+    content = payload.get("content", "")
+    if not target_path or ".." in target_path: return {"status": "error"}
+    
+    output_dir = os.path.abspath("/app/staging/output")
+    full_path = os.path.abspath(os.path.join(output_dir, target_path))
+    if not full_path.startswith(output_dir): return {"status": "error"}
+    
+    try:
+        # [NEW] Create directories if the Swarm forgot to make them
+        os.makedirs(os.path.dirname(full_path), exist_ok=True)
+        with open(full_path, "w", encoding="utf-8") as f: 
+            f.write(content)
+        return {"status": "success"}
+    except Exception as e: 
+        return {"status": "error", "message": str(e)}
+
+@app.post("/output/map")
+async def trigger_output_map():
+    output_dir = "/app/staging/output"
+    os.makedirs(output_dir, exist_ok=True)
+    mapper = ProjectMapper(output_dir)
+    await manager.broadcast({"type": "ast_map", "payload": mapper.generate_ui_graph()})
+    return {"status": "success"}
+
+# --- HITL RESOLUTION ENDPOINT ---
+@app.post("/hitl/resolve")
+async def resolve_hitl(payload: dict):
+    """Called when the user saves a fix for a quarantined file."""
+    filename = payload.get("filename", "unknown")
+    logger.info(f"HITL override submitted for {filename}")
+    
+    # Broadcast to the Swarm Monologue that the human has intervened
+    await manager.broadcast({
+        "type": "staging_log",
+        "payload": {
+            "type": "system",
+            "text": f"--- HITL FIX APPLIED TO {filename}. WAKING SWARM... ---"
+        }
+    })
+    
+    # In the future, this is where we will publish back to Redis to unblock the halted agent workflow!
+    return {"status": "success"}
 
 if __name__ == "__main__":
     import uvicorn
