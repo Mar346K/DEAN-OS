@@ -10,8 +10,10 @@ import valkyrie_crypto
 
 class InferenceGateway:
     def __init__(self):
-        self.tier1_model = "qwen2.5-coder:7b"
-        self.tier2_model = "gemini-2.5-pro" # Cloud heavy-lifter
+        # The Qwen 14B Q4_K_M is the resident workhorse for speed and logic
+        self.tier1_model = "qwen2.5-coder-14b-instruct-q4_k_m.gguf"
+        # The Qwen 32B IQ3_M is summoned for heavy architecture design
+        self.tier2_model = "Qwen2.5-Coder-32B-Instruct-IQ3_M.gguf"
         self.secret = os.getenv("DAEN_INTERNAL_SECRET", "daen-internal-dev-secret-2026")
 
         # Connect to Redis to broadcast the kill signal directly to the UI

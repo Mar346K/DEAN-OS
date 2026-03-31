@@ -2,8 +2,10 @@ import ollama
 import json
 
 class Architect:
-    def __init__(self, model_name="llama3.1:latest"):
+    # Changed default to the 32B model
+    def __init__(self, model_name="Qwen2.5-Coder-32B-Instruct-IQ3_M.gguf", project_id: str = "default"):
         self.model_name = model_name
+        self.project_id = project_id
 
     def draft_plan(self, user_intent: str, context: str = "") -> dict:
         print(f"[ARCHITECT] Drafting blueprint for: '{user_intent}'...")

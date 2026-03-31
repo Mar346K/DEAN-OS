@@ -2,13 +2,14 @@ import os
 import shutil
 
 class Deployer:
-    def __init__(self):
-        # The AI's messy sandbox
-        self.staging_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../staging/workspace"))
-        # The pristine production folder
-        self.prod_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../workspace"))
-
-        # Ensure production directory exists
+    def __init__(self, project_id: str = "default"):
+        self.project_id = project_id
+        self.staging_dir = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), f"../../../staging/projects/{project_id}/workspace")
+        )
+        self.prod_dir = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), f"../../../projects/{project_id}/workspace")
+        )
         os.makedirs(self.prod_dir, exist_ok=True)
 
     def deploy_module(self, filename: str) -> str:

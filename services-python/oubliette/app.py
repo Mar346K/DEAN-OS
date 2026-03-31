@@ -17,6 +17,7 @@ except Exception as e:
 class RunRequest(BaseModel):
     code: str = None
     entrypoint: str = "main.py"
+    project_id: str = "default"
 
 class ExtractRequest(BaseModel):
     filename: str
@@ -40,9 +41,15 @@ def health_check():
 @app.post("/run")
 async def run_in_workspace(payload: RunRequest, authorized: bool = Depends(verify_agent_token)):
     """Executes code within the context of the mounted workspace."""
-    host_workspace = os.getenv("HOST_WORKSPACE_PATH")
-    if not host_workspace:
-        host_workspace = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../staging/workspace"))
+    # Force the mount to be specific to the tenant ID
+    base_staging = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../staging/projects"))
+    host_workspace = os.path.join(base_staging, payload.project_id, "workspace")
+
+    # Security: Prevent directory traversal attacks (e.g., project_id = "../../../etc")
+    if not os.path.abspath(host_workspace).startswith(base_staging):
+        raise HTTPException(status_code=403, detail="Invalid Project ID: Directory Traversal Blocked")
+
+    os.makedirs(host_workspace, exist_ok=True)
 
     # [FIX] Bulletproof inline assignment so 'cmd' always exists
     cmd = ["-c", payload.code] if payload.code else [payload.entrypoint]

@@ -42,7 +42,7 @@ async def log_trace(db: AsyncSession, run_id: uuid.UUID, trace_id: str, agent_na
     await db.commit()
 
 # --- THE ASYNC WORKER LOGIC ---
-async def async_execute_assembly_line(prompt: str):
+async def async_execute_assembly_line(prompt: str, project_id_str: str = "00000000-0000-0000-0000-000000000000"):
     # CRITICAL FIX: Create the DB engine INSIDE the async loop so it's tied to this specific thread's event loop
     DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://deanos_admin:deanos_vault_2026@db/deanos_history")
     engine = create_async_engine(DATABASE_URL, pool_size=5, max_overflow=10)
@@ -50,17 +50,23 @@ async def async_execute_assembly_line(prompt: str):
 
     async with AsyncSessionLocal() as db:
         try:
-            run = SwarmRun(prompt=prompt, status="RUNNING")
+            # Convert string ID to UUID object, handling backwards compatibility
+            pid = uuid.UUID(project_id_str) if project_id_str != "00000000-0000-0000-0000-000000000000" else None
+
+            run = SwarmRun(prompt=prompt, status="RUNNING", project_id=pid)
             db.add(run)
             await db.commit()
             run_id = run.id
+
+            # Project Tag ensures agents have a folder even if the DB row isn't formally assigned yet
+            p_tag = str(pid) if pid else "default"
 
             broadcast_to_ui({"type": "agent_trace", "payload": {"trace_id": "SYS-001", "agent": "Manager", "action": f"Initiating Assembly Line...", "status": "running"}})
             await log_trace(db, run_id, "SYS-001", "Manager", f"Initiating Assembly Line for: {prompt}", "success")
 
             # 1. Architect
             broadcast_to_ui({"type": "agent_trace", "payload": {"trace_id": "ARCH-001", "agent": "Architect", "action": "Designing system blueprints...", "status": "running"}})
-            architect = Architect()
+            architect = Architect(project_id=p_tag)
             plan = await asyncio.to_thread(architect.draft_plan, prompt)
 
             if not plan or 'files' not in plan or len(plan['files']) == 0:
@@ -84,13 +90,13 @@ async def async_execute_assembly_line(prompt: str):
                 action_msg = f"Writing implementation for {filename}..." if attempt == 1 else f"Fixing errors in {filename} (Attempt {attempt})..."
                 broadcast_to_ui({"type": "agent_trace", "payload": {"trace_id": f"CODE-00{attempt}", "agent": "Coder", "action": action_msg, "status": "running"}})
 
-                coder = MainCoder()
+                coder = MainCoder(project_id=p_tag)
                 file_path = await asyncio.to_thread(coder.write_module, plan, target_file, feedback, attempt)
                 await log_trace(db, run_id, f"CODE-00{attempt}", "Coder", action_msg, "success", f"Generated: {file_path}")
 
                 # 2. Tester
                 broadcast_to_ui({"type": "agent_trace", "payload": {"trace_id": f"TEST-00{attempt}", "agent": "Tester", "action": f"Writing adversarial tests (Attempt {attempt})...", "status": "running"}})
-                tester = Tester()
+                tester = Tester(project_id=p_tag)
                 test_file_path = await asyncio.to_thread(tester.write_tests, filename, feedback, attempt)
 
                 if not test_file_path:
@@ -104,7 +110,7 @@ async def async_execute_assembly_line(prompt: str):
 
                 # 3. Analyzer
                 broadcast_to_ui({"type": "agent_trace", "payload": {"trace_id": f"ANAL-00{attempt}", "agent": "Analyzer", "action": "Evaluating in Oubliette Sandbox...", "status": "running"}})
-                analyzer = Analyzer()
+                analyzer = Analyzer(project_id=p_tag)
                 test_filename = os.path.basename(test_file_path)
                 report = await asyncio.to_thread(analyzer.evaluate_code, test_filename)
 
@@ -113,7 +119,7 @@ async def async_execute_assembly_line(prompt: str):
 
                     # 4. Deployer
                     broadcast_to_ui({"type": "agent_trace", "payload": {"trace_id": "DEP-001", "agent": "Deployer", "action": f"Migrating {filename} to production...", "status": "running"}})
-                    deployer = Deployer()
+                    deployer = Deployer(project_id=p_tag)
                     prod_path = await asyncio.to_thread(deployer.deploy_module, filename)
 
                     await log_trace(db, run_id, "DEP-001", "Deployer", "Migration complete.", "success", prod_path)
@@ -152,5 +158,5 @@ async def async_execute_assembly_line(prompt: str):
 
 # --- CELERY ENTRY POINTS ---
 @celery_app.task(name="sycophant.tasks.execute_assembly_line")
-def execute_assembly_line_task(prompt: str):
-    asyncio.run(async_execute_assembly_line(prompt))
+def execute_assembly_line_task(prompt: str, project_id_str: str = "00000000-0000-0000-0000-000000000000"):
+    asyncio.run(async_execute_assembly_line(prompt, project_id_str))

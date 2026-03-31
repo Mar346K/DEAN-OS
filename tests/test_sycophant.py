@@ -5,7 +5,7 @@ import os
 
 # Wire up the path to the Sycophant service
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../services-python/sycophant')))
-from orchestrator import execute_task
+from tasks import async_execute_assembly_line as execute_task
 
 @pytest.mark.asyncio
 @patch('orchestrator.httpx.AsyncClient')

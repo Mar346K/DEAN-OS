@@ -3,7 +3,8 @@ import os
 import valkyrie_crypto
 
 class Analyzer:
-    def __init__(self):
+    def __init__(self, project_id: str = "default"):
+        self.project_id = project_id
         oubliette_host = os.getenv("OUBLIETTE_HOST", "127.0.0.1")
         self.sandbox_url = f"http://{oubliette_host}:8002"
         self.secret = os.getenv("DAEN_INTERNAL_SECRET", "daen-internal-dev-secret-2026")
@@ -29,7 +30,10 @@ pytest.main(["-v", "{test_filename}"])
 # [FIX] Always exit cleanly so Docker hands over the logs instead of throwing an empty ContainerError
 sys.exit(0)
 """
-        payload = {"code": run_script}
+        payload = {
+            "code": run_script,
+            "project_id": self.project_id  # Pass this to Oubliette for isolated mounting
+        }
 
         try:
             # --- PHASE 16: The 5-Second Circuit Breaker ---

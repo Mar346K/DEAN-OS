@@ -8,8 +8,14 @@ from tools.ast_mapper import ProjectMapper
 from routing.gateway import InferenceGateway
 
 class Tester:
-    def __init__(self):
-        self.workspace_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../staging/workspace"))
+    def __init__(self, project_id: str = "default"):
+        self.project_id = project_id
+        # Creates a dedicated namespace: /staging/projects/{id}/workspace
+        self.workspace_dir = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), f"../../../staging/projects/{project_id}/workspace")
+        )
+        # Ensure the isolated workspace exists before the agent starts writing
+        os.makedirs(self.workspace_dir, exist_ok=True)
         self.gateway = InferenceGateway()
 
     def write_tests(self, filename: str, feedback: str = None, attempt: int = 1) -> str:
