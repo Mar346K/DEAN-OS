@@ -57,7 +57,8 @@ def ingest_docs():
                     points.append(PointStruct(
                         id=idx,
                         vector=vector,
-                        payload={"source": filename, "text": chunk}
+                        # [NEW] Tag every memory with a project_id (defaulting to 'global_docs' for system-wide context)
+                        payload={"source": filename, "text": chunk, "project_id": "global_docs"}
                     ))
                     idx += 1
 

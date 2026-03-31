@@ -4,6 +4,8 @@ import valkyrie_crypto
 import os
 from qdrant_client import QdrantClient
 from sentence_transformers import SentenceTransformer
+# [NEW] Import the Qdrant filtering models
+from qdrant_client.models import Filter, FieldCondition, MatchValue
 
 app = FastAPI(title="Mnemosyne Knowledge Vault")
 
@@ -29,9 +31,9 @@ def verify_agent_token(authorization: str = Header(None)):
     return True
 
 @app.post("/search")
-async def search_memory(query: str, authorized: bool = Depends(verify_agent_token)):
+async def search_memory(query: str, project_id: str = "default", authorized: bool = Depends(verify_agent_token)):
     """Retrieve context for the Sycophant Brain using Vector Similarity."""
-    print(f"[MNEMOSYNE] Memory requested for query: '{query}'")
+    print(f"[MNEMOSYNE] Memory requested for query: '{query}' | Tenant: {project_id}")
 
     try:
         if not client.collection_exists(COLLECTION_NAME):
@@ -40,19 +42,34 @@ async def search_memory(query: str, authorized: bool = Depends(verify_agent_toke
         # 1. Convert the AI's text query into a mathematical vector
         query_vector = model.encode(query).tolist()
 
+        # [NEW] Construct the Tenant Filter
+        # If no specific project is requested, we default to the global documentation
+        target_project = project_id if project_id != "default" else "global_docs"
+
+        tenant_filter = Filter(
+            must=[
+                FieldCondition(
+                    key="project_id",
+                    match=MatchValue(value=target_project)
+                )
+            ]
+        )
+
         # 2. Search Qdrant for the closest conceptual matches (Modern API)
         try:
             response = client.query_points(
                 collection_name=COLLECTION_NAME,
                 query=query_vector,
+                query_filter=tenant_filter,
                 limit=3
             )
             search_result = response.points
         except AttributeError:
-            # Fallback just in case
+            # Fallback for older Qdrant versions
             search_result = client.search(
                 collection_name=COLLECTION_NAME,
                 query_vector=query_vector,
+                query_filter=tenant_filter,
                 limit=3
             )
 
@@ -66,7 +83,7 @@ async def search_memory(query: str, authorized: bool = Depends(verify_agent_toke
             })
 
         if not formatted_results:
-            return {"results": [{"text": "No specific context found in Vault."}]}
+            return {"results": [{"text": f"No specific context found in Vault for tenant '{target_project}'."}]}
 
         return {"results": formatted_results}
 
