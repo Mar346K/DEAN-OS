@@ -1,26 +1,47 @@
 import datetime
 import uuid
 from typing import List, Optional
-from sqlalchemy import String, Text, Float, DateTime, ForeignKey, func
+from sqlalchemy import String, Text, Float, DateTime, ForeignKey, func, Boolean
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 class Base(DeclarativeBase):
     """The root class for all database tables."""
     pass
 
+# --- [NEW] TENANT ISOLATION ---
+class Project(Base):
+    """The root tenant entity. Isolates memory, files, and context."""
+    __tablename__ = "projects"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(100), unique=True)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    created_at: Mapped[datetime.datetime] = mapped_column(server_default=func.now())
+    updated_at: Mapped[datetime.datetime] = mapped_column(onupdate=func.now(), nullable=True)
+
+    # Relationships
+    runs: Mapped[List["SwarmRun"]] = relationship(back_populates="project", cascade="all, delete-orphan")
+
+# ------------------------------
+
 class SwarmRun(Base):
     """Tracks a top-level user request from start to finish."""
     __tablename__ = "swarm_runs"
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    # [NEW] Link the run to a specific project
+    project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("projects.id"))
+
     prompt: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(50), default="INITIATING") # INITIATING, RUNNING, COMPLETED, FAILED
 
-    # Timing
     created_at: Mapped[datetime.datetime] = mapped_column(server_default=func.now())
     updated_at: Mapped[datetime.datetime] = mapped_column(onupdate=func.now(), nullable=True)
 
     # Relationships
+    project: Mapped["Project"] = relationship(back_populates="runs")
     traces: Mapped[List["TaskTrace"]] = relationship(back_populates="run", cascade="all, delete-orphan")
     ledger_entries: Mapped[List["ValkyrieLedger"]] = relationship(back_populates="run")
 
@@ -31,16 +52,14 @@ class TaskTrace(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("swarm_runs.id"))
 
-    # Metadata from the TelemetryEngine
-    trace_id: Mapped[str] = mapped_column(String(8)) # The 8-char trace ID
+    trace_id: Mapped[str] = mapped_column(String(8))
     agent_name: Mapped[str] = mapped_column(String(100))
     action: Mapped[str] = mapped_column(Text)
-    status: Mapped[str] = mapped_column(String(50)) # running, success, error
-    logs: Mapped[Optional[str]] = mapped_column(Text, nullable=True) # Full stack traces or raw AI thoughts
+    status: Mapped[str] = mapped_column(String(50))
+    logs: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     timestamp: Mapped[datetime.datetime] = mapped_column(server_default=func.now())
 
-    # Relationships
     run: Mapped["SwarmRun"] = relationship(back_populates="traces")
 
 class ValkyrieLedger(Base):
@@ -56,5 +75,4 @@ class ValkyrieLedger(Base):
 
     timestamp: Mapped[datetime.datetime] = mapped_column(server_default=func.now())
 
-    # Relationships
     run: Mapped["SwarmRun"] = relationship(back_populates="ledger_entries")
