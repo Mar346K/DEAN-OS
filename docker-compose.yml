@@ -125,10 +125,12 @@ services:
     ports:
       - "8002:8002"
     environment:
+      # [FIX] Pass the absolute HOST path to the base staging folder
+      - HOST_STAGING_PATH=${PWD}/staging/projects
       - HOST_WORKSPACE_PATH=${PWD}/staging/workspace
     volumes:
       - ./services-python:/app
-      - /var/run/docker.sock:/var/run/docker.sock
+      - //var/run/docker.sock:/var/run/docker.sock  # Ensure this double slash is here for Windows!
       - ./infrastructure:/app/infrastructure
     networks:
       - swarm_net

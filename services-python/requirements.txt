@@ -13,3 +13,4 @@ greenlet # Required for SQLAlchemy async/await under the hood
 celery==5.3.6
 redis==5.0.3
 python-multipart>=0.0.9
+astor==0.8.1  # <--- [NEW] Required for AST Surgery

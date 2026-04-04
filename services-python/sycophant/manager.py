@@ -12,7 +12,13 @@ from contextlib import asynccontextmanager
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+# --- PATH FIX ---
+# Point to the current folder (sycophant)
 sys.path.append(os.path.dirname(__file__))
+# Point to the parent folder (services-python) so it can find 'database'
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+# ----------------
+
 from database.session import get_db
 from database.models import TaskTrace
 from tasks import execute_assembly_line_task
@@ -44,8 +50,11 @@ manager = ConnectionManager()
 
 async def redis_listener():
     try:
-        redis_host = os.getenv("REDIS_HOST", "redis")
-        redis_client = aioredis.from_url(f"redis://{redis_host}:6379/0", decode_responses=True)
+        is_local = os.getenv("REDIS_HOST") is None
+        redis_host = "127.0.0.1" if is_local else os.getenv("REDIS_HOST")
+        redis_port = 6380 if is_local else 6379
+
+        redis_client = aioredis.from_url(f"redis://{redis_host}:{redis_port}/0", decode_responses=True)
         pubsub = redis_client.pubsub()
         await pubsub.subscribe("ui_broadcasts")
 
@@ -129,7 +138,7 @@ def _scan_directory(base_path):
 
 @app.get("/workspace")
 async def get_workspace_tree():
-    workspace_dir = os.path.abspath("/app/staging/workspace")
+    workspace_dir = os.path.abspath("/app/staging/projects/default/workspace")
     os.makedirs(workspace_dir, exist_ok=True)
     return _scan_directory(workspace_dir)
 
@@ -137,7 +146,7 @@ async def get_workspace_tree():
 async def delete_workspace_item(payload: dict):
     target_path = payload.get("path")
     if not target_path or ".." in target_path: return {"status": "error", "message": "Invalid path"}
-    workspace_dir = os.path.abspath("/app/staging/workspace")
+    workspace_dir = os.path.abspath("/app/staging/projects/default/workspace")
     full_path = os.path.abspath(os.path.join(workspace_dir, target_path))
     if not full_path.startswith(workspace_dir): return {"status": "error", "message": "Path traversal blocked"}
     try:
@@ -148,7 +157,7 @@ async def delete_workspace_item(payload: dict):
 
 @app.post("/workspace/map")
 async def trigger_ast_map():
-    workspace_dir = "/app/staging/workspace"
+    workspace_dir = "/app/staging/projects/default/workspace"
     mapper = ProjectMapper(workspace_dir)
     graph_data = mapper.generate_ui_graph()
     await manager.broadcast({"type": "ast_map", "payload": graph_data})
@@ -156,7 +165,7 @@ async def trigger_ast_map():
 
 @app.post("/ingest")
 async def ingest_zip(file: UploadFile = File(...)):
-    workspace_dir = "/app/staging/workspace"
+    workspace_dir = "/app/staging/projects/default/workspace"
     os.makedirs(workspace_dir, exist_ok=True)
     safe_filename = os.path.basename(file.filename)
     file_path = os.path.join(workspace_dir, safe_filename)
@@ -179,8 +188,8 @@ async def ingest_zip(file: UploadFile = File(...)):
 
 @app.get("/output/tree")
 async def get_output_tree():
-    # [FIX] Pointed UI to where the agents actually write the code
-    workspace_dir = os.path.abspath("/app/staging/workspace")
+    # [FIX] Point UI to the new multi-tenant default staging folder
+    workspace_dir = os.path.abspath("/app/staging/projects/default/workspace")
     os.makedirs(workspace_dir, exist_ok=True)
     return _scan_directory(workspace_dir)
 
@@ -188,8 +197,7 @@ async def get_output_tree():
 async def read_file(payload: dict):
     target_path = payload.get("path")
     if not target_path or ".." in target_path: return {"status": "error"}
-    # [FIX] Pointed UI to where the agents actually write the code
-    workspace_dir = os.path.abspath("/app/staging/workspace")
+    workspace_dir = os.path.abspath("/app/staging/projects/default/workspace")
     full_path = os.path.abspath(os.path.join(workspace_dir, target_path))
     if not full_path.startswith(workspace_dir): return {"status": "error"}
     try:
@@ -201,8 +209,7 @@ async def write_file(payload: dict):
     target_path = payload.get("path")
     content = payload.get("content", "")
     if not target_path or ".." in target_path: return {"status": "error"}
-    # [FIX] Pointed UI to where the agents actually write the code
-    workspace_dir = os.path.abspath("/app/staging/workspace")
+    workspace_dir = os.path.abspath("/app/staging/projects/default/workspace")
     full_path = os.path.abspath(os.path.join(workspace_dir, target_path))
     if not full_path.startswith(workspace_dir): return {"status": "error"}
     try:
@@ -213,7 +220,7 @@ async def write_file(payload: dict):
 
 @app.post("/output/map")
 async def trigger_output_map():
-    workspace_dir = "/app/staging/workspace"
+    workspace_dir = "/app/staging/projects/default/workspace"
     os.makedirs(workspace_dir, exist_ok=True)
     mapper = ProjectMapper(workspace_dir)
     await manager.broadcast({"type": "ast_map", "payload": mapper.generate_ui_graph()})
@@ -224,7 +231,7 @@ async def trigger_output_map():
 @app.post("/staging/purge")
 async def purge_staging():
     """Violently deletes all files in the staging workspace."""
-    workspace_dir = os.path.abspath("/app/staging/workspace")
+    workspace_dir = os.path.abspath("/app/staging/projects/default/workspace")
     try:
         for item in os.listdir(workspace_dir):
             item_path = os.path.join(workspace_dir, item)

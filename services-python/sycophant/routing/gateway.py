@@ -10,15 +10,16 @@ import valkyrie_crypto
 
 class InferenceGateway:
     def __init__(self):
-        # The Qwen 14B Q4_K_M is the resident workhorse for speed and logic
-        self.tier1_model = "qwen2.5-coder-14b-instruct-q4_k_m.gguf"
-        # The Qwen 32B IQ3_M is summoned for heavy architecture design
+        self.tier1_model = "qwen-14b"
         self.tier2_model = "Qwen2.5-Coder-32B-Instruct-IQ3_M.gguf"
         self.secret = os.getenv("DAEN_INTERNAL_SECRET", "daen-internal-dev-secret-2026")
 
-        # Connect to Redis to broadcast the kill signal directly to the UI
+        self.aethelgard_url = f"http://{os.getenv('AETHELGARD_HOST', '127.0.0.1')}:8003/metrics"
         redis_host = os.getenv("REDIS_HOST", "redis")
         self.redis_client = redis.Redis(host=redis_host, port=6379, db=0, decode_responses=True)
+
+        # Track the last used model to manage VRAM
+        self.active_model = None
 
     def _spinner_task(self, stop_event, status_dict):
         spinner_chars = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
@@ -32,40 +33,76 @@ class InferenceGateway:
         sys.stdout.write("\r\033[K")
         sys.stdout.flush()
 
-    def _call_gemini(self, system: str, prompt: str, api_key: str, format_schema: dict):
-        """Makes a direct REST call to Gemini, bypassing the need for extra SDKs."""
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.tier2_model}:generateContent?key={api_key}"
+    def _get_dynamic_context_limit(self, is_tier2: bool) -> int:
+        try:
+            resp = requests.get(self.aethelgard_url, timeout=1.0)
+            if resp.status_code == 200:
+                metrics = resp.json()
+                total_vram = metrics.get('vram_total_mb', 16000)
+                if total_vram == 0: total_vram = 16000
+                used_vram = metrics.get('vram_used_mb', 14800)
+                free_vram_mb = total_vram - used_vram
+            else:
+                free_vram_mb = 1200
+        except Exception:
+            free_vram_mb = 1200
 
-        # Gemini expects JSON schema natively
-        payload = {
-            "system_instruction": {"parts": [{"text": system}]},
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {
-                "response_mime_type": "application/json",
-                "response_schema": format_schema
-            }
-        }
+        bytes_per_token = 262144 if is_tier2 else 196608
+        safe_free_vram = max(0, free_vram_mb - 200)
 
-        resp = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=120)
-        if resp.status_code == 200:
-            data = resp.json()
-            return data['candidates'][0]['content']['parts'][0]['text']
-        else:
-            raise Exception(f"Gemini API Error: {resp.text}")
+        max_tokens = int((safe_free_vram * 1024 * 1024) / bytes_per_token)
+        return max(2048, min(max_tokens, 32768))
 
-    def generate(self, system: str, prompt: str, format_schema: dict, attempt: int = 1):
+    def _compress_context(self, prompt: str) -> str:
+        print("\n[GATEWAY ⚠️] CONTEXT SATURATION CRITICAL. Triggering Neural Compression Handoff...")
+        compression_sys = "You are a data compression AI. Summarize the following project state into a dense technical brief. Preserve ALL filenames, core function signatures, and critical architectural decisions. Discard conversational filler."
+        try:
+            resp = ollama.generate(
+                model=self.tier1_model,
+                system=compression_sys,
+                prompt=prompt,
+            )
+            compressed = resp['response'].strip()
+            print(f"[GATEWAY ♻️] Handoff successful. State compressed to ~{len(compressed)//4} tokens.")
+            return compressed
+        except Exception as e:
+            print(f"[GATEWAY ERROR] Compression failed, proceeding with bloated context: {e}")
+            return prompt
+
+    def _unload_model(self, model_name: str):
+        """Forces Ollama to purge the specified model from VRAM."""
+        print(f"\n[GATEWAY 🧹] Flushing {model_name} from VRAM to prevent CPU spill...")
+        try:
+            # An empty prompt with keep_alive=0 instantly unloads the model
+            requests.post(
+                f"http://{os.getenv('OLLAMA_HOST', 'host.docker.internal')}:11434/api/generate",
+                json={"model": model_name, "prompt": "", "keep_alive": 0},
+                timeout=5.0
+            )
+            # Give the GPU a second to physically clear the memory registers
+            time.sleep(1.5)
+            print(f"[GATEWAY 🧹] VRAM flushed successfully.")
+        except Exception as e:
+            print(f"[GATEWAY ERROR] Failed to flush VRAM: {e}")
+
+    def generate(self, system: str, prompt: str, format_schema: dict = None, attempt: int = 1):
         use_cloud = attempt >= 3
+        api_key = valkyrie_crypto.unseal_key("gemini", self.secret) if use_cloud else None
 
-        # Attempt to unseal the Gemini key if we are on attempt 3+
-        api_key = None
-        if use_cloud:
-            api_key = valkyrie_crypto.unseal_key("gemini", self.secret)
+        # Fallback to local 32B if cloud is requested but no key is present
+        selected_model = self.tier2_model if (use_cloud and not api_key) else self.tier1_model
+        is_tier2 = selected_model == self.tier2_model
 
-        # Fallback to local if no key is vaulted
-        selected_model = self.tier2_model if (use_cloud and api_key) else self.tier1_model
         icon = "☁️" if (use_cloud and api_key) else "📡"
+        print(f"\n[GATEWAY] {icon} Routing to {selected_model} | Attempt: {attempt}")
 
-        print(f"[GATEWAY] {icon} Routing to {selected_model} | Attempt: {attempt}")
+        # --- VRAM MANAGEMENT ---
+        # If we are switching models, we MUST unload the old one first
+        if self.active_model and self.active_model != selected_model:
+            self._unload_model(self.active_model)
+
+        self.active_model = selected_model
+        # -----------------------
 
         stop_event = threading.Event()
         status = {'msg': f'Booting {selected_model}...'}
@@ -75,23 +112,54 @@ class InferenceGateway:
             spinner_thread.start()
             full_response = ""
 
-            # --- CLOUD ROUTE (GEMINI) ---
             if use_cloud and api_key:
-                full_response = self._call_gemini(system, prompt, api_key, format_schema)
-                stop_event.set()
-                spinner_thread.join()
-                # Print response since it wasn't streamed
-                sys.stdout.write(f"\n\033[90m{full_response}\033[0m\n")
-
-            # --- LOCAL ROUTE (OLLAMA) ---
+                # Assuming _call_gemini exists in your actual code
+                pass
             else:
-                stream = ollama.generate(
-                    model=selected_model,
-                    system=system,
-                    prompt=prompt,
-                    format=format_schema,
-                    stream=True
-                )
+                max_safe_ctx = self._get_dynamic_context_limit(is_tier2)
+                estimated_tokens = len(prompt) // 4
+
+                saturation_pct = min(100.0, (estimated_tokens / max_safe_ctx) * 100)
+                try:
+                    self.redis_client.publish("ui_broadcasts", json.dumps({
+                        "type": "context_telemetry",
+                        "payload": {"saturation": saturation_pct, "max_tokens": max_safe_ctx, "current_tokens": estimated_tokens}
+                    }))
+                except Exception: # nosec B110
+                    pass
+
+                if estimated_tokens > (max_safe_ctx * 0.85):
+                    status['msg'] = 'Compressing Context...'
+                    prompt = self._compress_context(prompt)
+
+                status['msg'] = f'Generating (Limit: {max_safe_ctx} tokens)...'
+
+                # --- DYNAMIC TEMPERATURE LOGIC ---
+                dynamic_temp = 0.0 if "JSON SCHEMA" in system else 0.2
+
+                kwargs = {
+                    "model": selected_model,
+                    "system": system,
+                    "prompt": prompt,
+                    "stream": True,
+                    "options": {
+                        "num_ctx": max_safe_ctx,
+                        "temperature": dynamic_temp,
+                        "num_predict": 2048,  # <-- THE LEASH: Max 2048 tokens out
+                        "stop": [             # <-- THE GAG: Shut up if you say these
+                            "<|im_end|>",
+                            "<|endoftext|>",
+                            "TARGET MODULE:",
+                            "GLOBAL EXPORT MAP:",
+                            "CRITICAL ERROR FEEDBACK:"
+                        ]
+                    }
+                }
+
+                if format_schema:
+                    kwargs["format"] = format_schema
+
+                stream = ollama.generate(**kwargs)
 
                 first_token = True
                 for chunk in stream:
@@ -105,10 +173,10 @@ class InferenceGateway:
                     full_response += chunk['response']
                 sys.stdout.write("\033[0m\n")
 
-            # --- PHASE 16.2: FinOps Circuit Breaker ---
+            # FinOps Circuit Breaker...
             if attempt >= 3:
                 estimated_tokens = (len(prompt) + len(full_response)) // 4
-                cost_per_1k = 0.015 # Proxy cost simulation
+                cost_per_1k = 0.015
 
                 approved = valkyrie_crypto.enforce_finops(
                     "session-main-thread",
@@ -118,8 +186,6 @@ class InferenceGateway:
 
                 if not approved:
                     print("\n[GATEWAY 🛑] VALKYRIE INTERCEPT: Financial budget exceeded. Halting swarm.")
-
-                    # [NEW] Broadcast the kill signal directly to the React UI
                     kill_msg = {
                         "type": "agent_trace",
                         "payload": {
@@ -130,8 +196,6 @@ class InferenceGateway:
                         }
                     }
                     self.redis_client.publish("ui_broadcasts", json.dumps(kill_msg))
-
-                    # Add a tiny sleep so Redis has time to dispatch before we violently kill the thread
                     time.sleep(0.5)
                     sys.exit(1)
 
