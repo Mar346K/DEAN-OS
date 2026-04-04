@@ -31,8 +31,8 @@ export default function App() {
   const [promptInput, setPromptInput] = useState("");
   const traceEndRef = useRef(null);
 
-  // --- GOVERNANCE STATE (GEMINI ADDED) ---
-  const [keys, setKeys] = useState({ openai: "", anthropic: "", gemini: "" });
+  // --- GOVERNANCE STATE (GEMINI & OpenRouter ADDED) ---
+  const [keys, setKeys] = useState({ openai: "", anthropic: "", gemini: "", openrouter: "" });
   const [keyStatus, setKeyStatus] = useState({ openai: "UNSEALED", anthropic: "UNSEALED", gemini: "UNSEALED" });
   const [budget, setBudget] = useState(1.00);
   const [budgetStatus, setBudgetStatus] = useState("SYNCED");

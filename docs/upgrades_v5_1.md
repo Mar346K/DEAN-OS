@@ -35,3 +35,32 @@ To maximize capability while minimizing cost, DEAN-OS dynamically routes tasks t
 
 ## OpenClaw Interoperability
 DEAN-OS is model-agnostic and designed to adhere to the OpenClaw Interop Protocol, allowing seamless integration of future enterprise models (MiMo-V2-Pro, DeepSeek) without pipeline refactoring.
+
+Step 3: Where the New Logic Belongs (Integration Strategy)
+To implement this without breaking the clean v5.0 architecture you just built, we need to be surgical about where we place the new code.
+
+Here is the integration map for the Starbucks Sprint:
+
+1. The Multi-Model Router (The Brain Switchboard)
+
+Target File: services-python/sycophant/routing/gateway.py
+
+The Plan: We need to upgrade your InferenceGateway. Instead of just swapping between local qwen-14b and Gemini, we will add dedicated functions like generate_with_nemotron(prompt) and generate_with_qwen36(prompt). We will add a task_type parameter to the main generate function to act as the traffic cop.
+
+2. The Neural Zip (Pillar A)
+
+Target File: Create a new agent: services-python/sycophant/agents/librarian.py
+
+The Plan: This agent will receive large file dumps, route them through the Gateway to Nemotron 3 Super, ask for the Functional Pointer Graph (FPG) JSON, and save that JSON to your Qdrant vector database (MNEMOSYNE).
+
+3. Compliance-as-Physics (Pillar B)
+
+Target File: services-python/sycophant/tools/ast_surgeon.py
+
+The Plan: You asked if we should make the "Security Hammer" adjustable. Absolutely. Hardcoding one level of security is brittle. We will add a security_level="dev" or "prod" parameter to the Surgeon. In "prod" mode, it will actively parse the AST tree looking for ast.Assign nodes where the variable name contains "key" or "secret" and the value is a raw string, and it will physically delete that node.
+
+4. The Digital Twin (Pillar C)
+
+Target File: services-python/sycophant/agents/architect.py
+
+The Plan: We will upgrade the Architect so that after it generates the JSON DAG, it passes the DAG to Gemini 3.1 Flash Lite to perform a "Logical Flow Simulation" to check for circular dependencies before returning the blueprint to the Orchestrator.

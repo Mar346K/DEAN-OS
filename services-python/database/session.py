@@ -2,11 +2,16 @@ import os
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from typing import AsyncGenerator
 
-# Pull the credentials from the docker-compose environment variables
+# --- DYNAMIC DB ROUTING ---
+# If REDIS_HOST isn't set, we know we are running locally on Windows via daenctl.py
+is_local = os.getenv("REDIS_HOST") is None
+db_host = "127.0.0.1" if is_local else "db"
+
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
-    "postgresql+asyncpg://deanos_admin:deanos_vault_2026@db/deanos_history"
+    f"postgresql+asyncpg://deanos_admin:deanos_vault_2026@{db_host}/deanos_history"
 )
+# --------------------------
 
 # Initialize the async engine
 # 'pool_size' and 'max_overflow' ensure we don't drop connections during heavy swarm bursts
