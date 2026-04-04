@@ -25,6 +25,11 @@ export default function App() {
   const [telemetry, setTelemetry] = useState({
     status: "STANDBY", cpu_usage_percent: 0, ram_usage_percent: 0, vram_usage_percent: 0, gpu_temp_c: 0
   });
+
+  // --- HEALTH LOGS STATE ---
+  const [healthLogs, setHealthLogs] = useState("");
+  const [activeLogService, setActiveLogService] = useState("api");
+
   const [traceLogs, setTraceLogs] = useState([]);
   const [astNodes, setAstNodes] = useState([]);
   const [astEdges, setAstEdges] = useState([]);
@@ -37,9 +42,12 @@ export default function App() {
   const [budget, setBudget] = useState(1.00);
   const [budgetStatus, setBudgetStatus] = useState("SYNCED");
 
+  // Use the environment variable, fallback to localhost if it fails to load
+  const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8000";
+
   const fetchLogs = async () => {
     try {
-      const res = await fetch("http://127.0.0.1:8000/logs");
+      const res = await fetch(`${API_BASE}/logs`);
       const data = await res.json();
       setForensicLogs(data);
     } catch (err) {}
@@ -47,7 +55,7 @@ export default function App() {
 
   const fetchWorkspace = async () => {
     try {
-      const res = await fetch("http://127.0.0.1:8000/workspace");
+      const res = await fetch(`${API_BASE}/workspace`);
       const data = await res.json();
       setWorkspaceFiles(data);
     } catch (err) {}
@@ -55,20 +63,35 @@ export default function App() {
 
   const fetchOutputTree = async () => {
     try {
-      const res = await fetch("http://127.0.0.1:8000/output/tree");
+      const res = await fetch(`${API_BASE}/output/tree`);
       const data = await res.json();
       setOutputFiles(data);
     } catch (err) {}
+  };
+
+  const fetchHealthLogs = async (service) => {
+    setActiveLogService(service);
+    setHealthLogs("Fetching logs from Docker Daemon...");
+    try {
+        const res = await fetch(`${API_BASE}/system/logs/${service}`);
+        const data = await res.json();
+        setHealthLogs(data.logs);
+    } catch (err) {
+        setHealthLogs("Fatal error connecting to API: " + err.message);
+    }
   };
 
   useEffect(() => {
     if (activeTab === "LOGS") fetchLogs();
     if (activeTab === "WORKSPACE") fetchWorkspace();
     if (activeTab === "STAGING") fetchOutputTree();
+    if (activeTab === "SYSTEM_HEALTH") fetchHealthLogs(activeLogService);
   }, [activeTab]);
 
   useEffect(() => {
-    const ws = new WebSocket("ws://127.0.0.1:8000/ws");
+    // Strip http/s from API_BASE and replace with ws
+    const wsUrl = API_BASE.replace(/^http/, "ws") + "/ws";
+    const ws = new WebSocket(wsUrl);
     ws.onmessage = (event) => {
       const msg = JSON.parse(event.data);
       switch(msg.type) {
@@ -123,7 +146,7 @@ export default function App() {
       }
     };
     return () => ws.close();
-  }, []);
+  }, [API_BASE]);
 
   useEffect(() => { traceEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [traceLogs]);
   useEffect(() => { validationLogEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [validationLogs]);
@@ -132,7 +155,7 @@ export default function App() {
   const handleSaveKey = async (provider) => {
     setKeyStatus(prev => ({ ...prev, [provider]: "ENCRYPTING..." }));
     try {
-        const res = await fetch("http://127.0.0.1:8000/settings/keys", {
+        const res = await fetch(`${API_BASE}/settings/keys`, {
             method: "POST", headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ provider, api_key: keys[provider] })
         });
@@ -149,7 +172,7 @@ export default function App() {
   const handleSaveBudget = async () => {
       setBudgetStatus("SYNCING...");
       try {
-          await fetch("http://127.0.0.1:8000/settings/budget", {
+          await fetch(`${API_BASE}/settings/budget`, {
               method: "POST", headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ limit: budget })
           });
@@ -160,7 +183,7 @@ export default function App() {
   // --- BRUTE FORCE HANDLERS ---
   const handlePurge = async () => {
       try {
-          await fetch("http://127.0.0.1:8000/staging/purge", { method: "POST" });
+          await fetch(`${API_BASE}/staging/purge`, { method: "POST" });
           fetchOutputTree();
           setActiveFilePath(null);
           setActiveFileContent("");
@@ -169,7 +192,7 @@ export default function App() {
 
   const handleKill = async () => {
       try {
-          await fetch("http://127.0.0.1:8000/staging/kill", { method: "POST" });
+          await fetch(`${API_BASE}/staging/kill`, { method: "POST" });
       } catch (err) {}
   };
 
@@ -182,11 +205,12 @@ export default function App() {
     const formData = new FormData();
     formData.append("file", files[0]);
     try {
-        const res = await fetch("http://127.0.0.1:8000/ingest", { method: "POST", body: formData });
+        const res = await fetch(`${API_BASE}/ingest`, { method: "POST", body: formData });
         const result = await res.json();
         if(result.status === "success") { setSelectedPaths(new Set()); fetchWorkspace(); }
-    } catch (err) { alert("Failed to connect to Intake Forge."); }
-    finally { setIsUploading(false); }
+    } catch (err) {
+        alert("Upload Failed. Error: " + err.message);
+    } finally { setIsUploading(false); }
   };
 
   const handleToggleSelect = (path) => {
@@ -202,7 +226,7 @@ export default function App() {
     setIsDeleting(true);
     try {
         for (const path of pathsToDelete) {
-            await fetch("http://127.0.0.1:8000/workspace/delete", {
+            await fetch(`${API_BASE}/workspace/delete`, {
                 method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path })
             });
         }
@@ -210,9 +234,20 @@ export default function App() {
     } catch (err) {} finally { setIsDeleting(false); }
   };
 
+  // --- NEW HANDLER: PRUNE VENV ---
+  const handlePruneVenv = async () => {
+      setIsDeleting(true);
+      try {
+          const res = await fetch(`${API_BASE}/workspace/prune-venv`, { method: "POST" });
+          const result = await res.json();
+          if (result.status === "success") fetchWorkspace();
+      } catch (err) { alert("Failed to prune workspace."); }
+      finally { setIsDeleting(false); }
+  };
+
   const handleGenerateWorkspaceMap = async () => {
       setIsMapping(true);
-      try { await fetch("http://127.0.0.1:8000/workspace/map", { method: "POST" }); }
+      try { await fetch(`${API_BASE}/workspace/map`, { method: "POST" }); }
       catch (err) { setIsMapping(false); }
   };
 
@@ -220,7 +255,7 @@ export default function App() {
       setActiveFilePath(path);
       setActiveError(errorTraceback);
       try {
-          const res = await fetch("http://127.0.0.1:8000/file/read", {
+          const res = await fetch(`${API_BASE}/file/read`, {
               method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path })
           });
           const data = await res.json();
@@ -240,13 +275,13 @@ export default function App() {
       if (!activeFilePath) return;
       setIsSaving(true);
       try {
-          await fetch("http://127.0.0.1:8000/file/write", {
+          await fetch(`${API_BASE}/file/write`, {
               method: "POST", headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ path: activeFilePath, content: activeFileContent })
           });
           const isQuarantined = quarantineFiles.find(f => f.filename === activeFilePath);
           if (isQuarantined) {
-              await fetch("http://127.0.0.1:8000/hitl/resolve", {
+              await fetch(`${API_BASE}/hitl/resolve`, {
                   method: "POST", headers: { "Content-Type": "application/json" },
                   body: JSON.stringify({ filename: activeFilePath, hint: "Fixed via Active Editor", error_traceback: activeError })
               });
@@ -259,7 +294,7 @@ export default function App() {
 
   const handleGenerateOutputMap = async () => {
       setIsMapping(true);
-      try { await fetch("http://127.0.0.1:8000/output/map", { method: "POST" }); }
+      try { await fetch(`${API_BASE}/output/map`, { method: "POST" }); }
       catch (err) { setIsMapping(false); }
   };
 
@@ -320,7 +355,7 @@ export default function App() {
         <div className="flex items-center gap-12">
             <div className="text-xl font-black text-[#00f3ff] tracking-tighter font-headline neon-glow-cyan">DEAN_OS_v3.0</div>
             <nav className="hidden lg:flex gap-8 font-headline text-[10px] font-bold tracking-[0.2em] mt-1">
-                {["AST_MAPPER", "STAGING", "WORKSPACE", "LOGS", "SETTINGS"].map(tab => (
+                {["AST_MAPPER", "STAGING", "WORKSPACE", "LOGS", "SYSTEM_HEALTH", "SETTINGS"].map(tab => (
                     <button key={tab} onClick={() => setActiveTab(tab)} className={`transition-colors pb-4 ${activeTab === tab ? "text-primary-container border-b-2 border-primary-container" : "text-on-surface-variant hover:text-white"}`}>
                         {tab.replace("_", " ")}
                     </button>
@@ -349,7 +384,7 @@ export default function App() {
               <input type="text" value={promptInput} onChange={(e) => setPromptInput(e.target.value)} placeholder="Enter system prompt..." className="w-full bg-surface-container-low border-b-2 border-outline-variant focus:border-primary-container text-primary-container font-mono text-[10px] p-2 outline-none"/>
               <button onClick={async () => {
                       if (!promptInput) return;
-                      await fetch("http://127.0.0.1:8000/build", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt: promptInput }) });
+                      await fetch(`${API_BASE}/build`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt: promptInput }) });
                       setPromptInput("");
                   }} className="w-full py-3 bg-gradient-to-r from-primary to-primary-container text-on-primary font-headline font-bold text-[10px] tracking-widest uppercase hover:brightness-110 active:scale-95">
                   DEPLOY_AGENT
@@ -488,6 +523,37 @@ export default function App() {
                             </button>
                         </div>
                     </div>
+                </div>
+            </div>
+        )}
+
+        {/* --- SYSTEM HEALTH HUB --- */}
+        {activeTab === "SYSTEM_HEALTH" && (
+            <div className="flex-1 flex flex-col h-full">
+                <div className="flex justify-between items-end mb-4">
+                    <div>
+                        <h1 className="font-headline text-4xl font-black uppercase mb-1">DOCKER_DAEMON_LOGS</h1>
+                        <p className="font-headline text-[10px] tracking-[0.2em] text-on-surface-variant uppercase">LIVE INFRASTRUCTURE TELEMETRY</p>
+                    </div>
+                    <div className="flex gap-2">
+                        {["api", "oubliette", "worker", "mnemosyne", "aethelgard"].map(svc => (
+                            <button
+                                key={svc}
+                                onClick={() => fetchHealthLogs(svc)}
+                                className={`px-4 py-2 text-[10px] font-headline font-bold tracking-widest uppercase transition-colors ${activeLogService === svc ? 'bg-primary-container text-black' : 'border border-outline-variant text-on-surface-variant hover:text-white'}`}>
+                                {svc}
+                            </button>
+                        ))}
+                    </div>
+                </div>
+                <div className="flex-1 bg-[#08080a] border border-outline-variant/30 p-4 shadow-inner overflow-hidden flex flex-col">
+                    <div className="flex justify-between border-b border-outline-variant/20 pb-2 mb-2">
+                        <span className="text-secondary-container font-mono text-[10px] font-bold">CONTAINER: deanos_{activeLogService}</span>
+                        <button onClick={() => fetchHealthLogs(activeLogService)} className="text-primary-container hover:text-white text-[10px] font-mono">↻ REFRESH</button>
+                    </div>
+                    <pre className="flex-1 overflow-y-auto terminal-scrollbar font-mono text-[11px] text-on-surface-variant whitespace-pre-wrap leading-relaxed">
+                        {healthLogs || "No logs available."}
+                    </pre>
                 </div>
             </div>
         )}
@@ -631,6 +697,10 @@ export default function App() {
                             <div className="flex items-center gap-3">
                                 <span className="text-[10px] font-mono text-on-surface-variant tracking-widest">{selectedPaths.size} SELECTED</span>
                                 <button onClick={handleDeleteSelected} disabled={selectedPaths.size === 0 || isDeleting} className="bg-error/20 text-error border border-error/50 font-headline font-bold text-[10px] tracking-widest px-4 py-2 uppercase transition-all hover:bg-error hover:text-white disabled:opacity-30 active:scale-95">{isDeleting ? "DELETING..." : "DELETE SELECTED"}</button>
+                                {/* --- NEW PRUNE BUTTON --- */}
+                                <button onClick={handlePruneVenv} disabled={isDeleting} className="bg-secondary-container/20 text-secondary-container border border-secondary-container/50 font-headline font-bold text-[10px] tracking-widest px-4 py-2 uppercase transition-all hover:bg-secondary-container hover:text-black active:scale-95 disabled:opacity-30">
+                                    PRUNE_VIRTUAL_ENV
+                                </button>
                             </div>
                             <button onClick={handleGenerateWorkspaceMap} disabled={isMapping} className="bg-primary-container text-[#131315] font-headline font-black text-[12px] tracking-widest px-6 py-2 uppercase transition-all hover:brightness-110 active:scale-95 disabled:opacity-50 shadow-[0_0_15px_rgba(0,243,255,0.4)]">{isMapping ? "MAPPING..." : "GENERATE AST MAP"}</button>
                         </div>

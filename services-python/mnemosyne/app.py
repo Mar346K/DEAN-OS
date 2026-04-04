@@ -2,23 +2,28 @@ from fastapi import FastAPI, Depends, Header, HTTPException
 from pydantic import BaseModel
 import valkyrie_crypto
 import os
+import logging
 from qdrant_client import QdrantClient
 from sentence_transformers import SentenceTransformer
-# [NEW] Import the Qdrant filtering models
 from qdrant_client.models import Filter, FieldCondition, MatchValue
+
+# Setup logging for the System Health tab
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("mnemosyne")
 
 app = FastAPI(title="Mnemosyne Knowledge Vault")
 
-# [TRUTH_SOURCE]: Must match the secret in Oubliette and Valkyrie
-INTERNAL_SECRET = "daen-internal-dev-secret-2026"  # nosec B105
+# [TRUTH_SOURCE]: Use environment variable first, then fallback
+INTERNAL_SECRET = os.getenv("DAEN_INTERNAL_SECRET", "daen-internal-dev-secret-2026")
 
-print("[MNEMOSYNE] Loading Neural Embedding Model (all-MiniLM-L6-v2)...")
+logger.info("Loading Neural Embedding Model (all-MiniLM-L6-v2)...")
 model = SentenceTransformer('all-MiniLM-L6-v2')
 
-# Calculate absolute path to the vector DB
-db_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../storage/qdrant_db"))
-print(f"[MNEMOSYNE] Connecting to Qdrant Vault at: {db_path}")
-client = QdrantClient(path=db_path)
+# [FIX] Connect to the Qdrant CONTAINER ENGINE instead of a local path
+qdrant_host = os.getenv("QDRANT_HOST", "qdrant")
+logger.info(f"Connecting to Qdrant Engine at: {qdrant_host}:6333")
+client = QdrantClient(host=qdrant_host, port=6333)
+
 COLLECTION_NAME = "daen_docs"
 
 def verify_agent_token(authorization: str = Header(None)):
@@ -33,19 +38,17 @@ def verify_agent_token(authorization: str = Header(None)):
 @app.post("/search")
 async def search_memory(query: str, project_id: str = "default", authorized: bool = Depends(verify_agent_token)):
     """Retrieve context for the Sycophant Brain using Vector Similarity."""
-    print(f"[MNEMOSYNE] Memory requested for query: '{query}' | Tenant: {project_id}")
+    logger.info(f"Memory requested: '{query}' | Tenant: {project_id}")
 
     try:
         if not client.collection_exists(COLLECTION_NAME):
             return {"results": [{"text": "Vault is empty. No collections found."}]}
 
-        # 1. Convert the AI's text query into a mathematical vector
+        # 1. Convert text to vector
         query_vector = model.encode(query).tolist()
 
-        # [NEW] Construct the Tenant Filter
-        # If no specific project is requested, we default to the global documentation
+        # 2. Construct the Tenant Filter
         target_project = project_id if project_id != "default" else "global_docs"
-
         tenant_filter = Filter(
             must=[
                 FieldCondition(
@@ -55,25 +58,15 @@ async def search_memory(query: str, project_id: str = "default", authorized: boo
             ]
         )
 
-        # 2. Search Qdrant for the closest conceptual matches (Modern API)
-        try:
-            response = client.query_points(
-                collection_name=COLLECTION_NAME,
-                query=query_vector,
-                query_filter=tenant_filter,
-                limit=3
-            )
-            search_result = response.points
-        except AttributeError:
-            # Fallback for older Qdrant versions
-            search_result = client.search(
-                collection_name=COLLECTION_NAME,
-                query_vector=query_vector,
-                query_filter=tenant_filter,
-                limit=3
-            )
+        # 3. Standardized Search (Talking to the container engine)
+        search_result = client.search(
+            collection_name=COLLECTION_NAME,
+            query_vector=query_vector,
+            query_filter=tenant_filter,
+            limit=5
+        )
 
-        # 3. Format results for the Brain
+        # 4. Format results
         formatted_results = []
         for hit in search_result:
             formatted_results.append({
@@ -83,13 +76,13 @@ async def search_memory(query: str, project_id: str = "default", authorized: boo
             })
 
         if not formatted_results:
-            return {"results": [{"text": f"No specific context found in Vault for tenant '{target_project}'."}]}
+            return {"results": [{"text": f"No specific context found for '{target_project}'."}]}
 
         return {"results": formatted_results}
 
     except Exception as e:
-        print(f"[MNEMOSYNE] Search Error: {e}")
-        return {"results": [{"text": f"Error accessing memory: {e}"}]}
+        logger.error(f"Search Error: {e}")
+        return {"results": [{"text": f"Error accessing memory: {str(e)}"}]}
 
 if __name__ == "__main__":
     import uvicorn

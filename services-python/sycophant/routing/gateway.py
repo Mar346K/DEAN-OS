@@ -68,7 +68,7 @@ class InferenceGateway:
         task_type options: 'CODE_GEN', 'INGEST', 'SIMULATE'
         """
         # Unseal the required keys
-        openrouter_key = valkyrie_crypto.unseal_key("openrouter", self.secret)
+        openrouter_key = valkyrie_crypto.unseal_key("anthropic", self.secret)
         gemini_key = valkyrie_crypto.unseal_key("gemini", self.secret)
 
         # 1. ROUTING LOGIC

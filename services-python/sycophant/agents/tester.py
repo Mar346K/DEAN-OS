@@ -44,7 +44,13 @@ class Tester:
 
         try:
             gateway = InferenceGateway()
-            response = gateway.generate(system=system_prompt, prompt=user_prompt, attempt=attempt)
+            # [FIX] Force routing to OpenRouter 32B
+            response = gateway.generate(
+                system=system_prompt,
+                prompt=user_prompt,
+                task_type="CODE_GEN",
+                attempt=attempt
+            )
             raw_output = response['response'].strip()
 
             compiled_code = self._compile_code(raw_output)

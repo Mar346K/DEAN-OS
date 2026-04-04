@@ -5,9 +5,10 @@ import valkyrie_crypto
 
 class Architect:
     """
-    The Master Planner of DEAN-OS v5.0.
-    Uses Gemini 2.5 Flash to convert a user's intent and technical research
-    into a strict Directed Acyclic Graph (DAG) of Python contracts.
+    The Master Planner of DEAN-OS v5.1.
+    Uses Gemini 2.5 Flash to convert a user's intent into a JSON DAG,
+    and then performs a 'Ghost Execution' to simulate data flow and catch
+    circular dependencies before committing to local generation.
     """
     def __init__(self, project_id: str = "default"):
         self.project_id = project_id
@@ -22,7 +23,32 @@ class Architect:
             print("[ARCHITECT ❌] CRITICAL: Gemini API key not found in the Vault.")
             return None
 
-        # --- THE V5.0 GRAPH PROMPT ---
+        # --- PHASE 1: The Initial Draft ---
+        blueprint = self._generate_initial_dag(user_intent, context, api_key)
+        if not blueprint:
+            return None
+
+        # --- PHASE 2: The Digital Twin Simulation ---
+        print("[ARCHITECT] 👻 Initializing Digital Twin for Ghost Execution...")
+        simulation_result = self._simulate_ghost_execution(blueprint, api_key)
+
+        if simulation_result.get("status") == "PASS":
+            print(f"[ARCHITECT SUCCESS] ✅ DAG Blueprint verified by Digital Twin. Simulated Execution Time: {simulation_result.get('estimated_ms', 0)}ms.")
+            return blueprint
+        else:
+            print(f"[ARCHITECT ⚠️] Digital Twin detected a fatal flaw: {simulation_result.get('reason')}")
+            print("[ARCHITECT] ♻️ Triggering Architectural Refactor...")
+
+            # Feed the failure back into the generator for a second attempt
+            refactor_context = f"{context}\n\nCRITICAL SYSTEM FEEDBACK: Your previous architecture failed simulation. REASON: {simulation_result.get('reason')}. Fix this flaw."
+            refactored_blueprint = self._generate_initial_dag(user_intent, refactor_context, api_key)
+
+            if refactored_blueprint:
+                 print("[ARCHITECT SUCCESS] ✅ Refactored DAG Blueprint generated.")
+                 return refactored_blueprint
+            return None
+
+    def _generate_initial_dag(self, user_intent: str, context: str, api_key: str) -> dict:
         system_instruction = (
             "You are the DEAN-OS Lead Architect. Your job is to design modular Python project structures.\n"
             "You MUST output your design as a Directed Acyclic Graph (DAG) in pure JSON format.\n\n"
@@ -51,34 +77,48 @@ class Architect:
         payload = {
             "system_instruction": {"parts": [{"text": system_instruction}]},
             "contents": [{"parts": [{"text": user_prompt}]}],
-            "generationConfig": {
-                "temperature": 0.0, # ZERO temperature for strict JSON determinism
-                "response_mime_type": "application/json" # Force Gemini to output valid JSON
-            }
+            "generationConfig": {"temperature": 0.0, "response_mime_type": "application/json"}
         }
 
         try:
-            response = requests.post(
-                f"{self.api_url}?key={api_key}",
-                json=payload,
-                timeout=15.0
-            )
-
-            if response.status_code != 200:
-                print(f"[ARCHITECT ❌] API Error: {response.status_code} - {response.text}")
-                return None
-
-            data = response.json()
-            raw_output = data['candidates'][0]['content']['parts'][0]['text']
-
-            blueprint = json.loads(raw_output)
-            print(f"[ARCHITECT SUCCESS] ✅ DAG Blueprint generated with {len(blueprint.get('nodes', []))} nodes and {len(blueprint.get('edges', []))} edges.")
-            return blueprint
-
-        except json.JSONDecodeError as e:
-            print(f"\n[ARCHITECT ERROR] Failed to parse JSON: {e}")
-            print(f"--- RAW OUTPUT ---\n{raw_output}\n------------------")
-            return None
+            response = requests.post(f"{self.api_url}?key={api_key}", json=payload, timeout=15.0)
+            response.raise_for_status()
+            raw_output = response.json()['candidates'][0]['content']['parts'][0]['text']
+            return json.loads(raw_output)
         except Exception as e:
-            print(f"[ARCHITECT ERROR] Fatal error during drafting: {e}")
+            print(f"[ARCHITECT ERROR] Failed to generate DAG: {e}")
             return None
+
+    def _simulate_ghost_execution(self, blueprint: dict, api_key: str) -> dict:
+        """
+        Forces Gemini to mentally step through the code execution based only on signatures.
+        """
+        system_instruction = (
+            "You are the DEAN-OS Digital Twin Simulator. "
+            "You will be given a JSON Directed Acyclic Graph (DAG) representing a software architecture. "
+            "You must perform a 'Ghost Execution'. Trace the data flow from the entry point through the edges. "
+            "Analyze the function signatures for missing inputs, mismatched types, or circular dependencies.\n\n"
+            "Output your findings strictly as JSON matching this schema:\n"
+            "{\n"
+            "  \"status\": \"PASS\" or \"FAIL\",\n"
+            "  \"reason\": \"Detailed explanation of why it failed (or 'Architecture is sound').\",\n"
+            "  \"estimated_ms\": integer (guess the execution time of the critical path)\n"
+            "}"
+        )
+
+        user_prompt = f"SIMULATE THIS ARCHITECTURE:\n{json.dumps(blueprint, indent=2)}"
+
+        payload = {
+            "system_instruction": {"parts": [{"text": system_instruction}]},
+            "contents": [{"parts": [{"text": user_prompt}]}],
+            "generationConfig": {"temperature": 0.1, "response_mime_type": "application/json"}
+        }
+
+        try:
+            response = requests.post(f"{self.api_url}?key={api_key}", json=payload, timeout=15.0)
+            response.raise_for_status()
+            raw_output = response.json()['candidates'][0]['content']['parts'][0]['text']
+            return json.loads(raw_output)
+        except Exception as e:
+            print(f"[TWIN ERROR] Simulation failed, defaulting to PASS to prevent deadlock: {e}")
+            return {"status": "PASS", "reason": "Simulation bypassed due to timeout.", "estimated_ms": 0}

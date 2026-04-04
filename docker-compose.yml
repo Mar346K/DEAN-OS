@@ -46,7 +46,7 @@ services:
       dockerfile: services-python/Dockerfile
     container_name: deanos_api
     # ADD --reload-exclude "staging/*" HERE:
-    command: ["uvicorn", "sycophant.manager:app", "--host", "0.0.0.0", "--port", "8000"]
+    command: ["uvicorn", "sycophant.manager:app", "--host", "0.0.0.0", "--port", "8000", "--reload", "--reload-exclude", "staging/*"]
     ports:
       - "8000:8000"
     environment:
@@ -62,6 +62,7 @@ services:
       - ./workspace:/app/workspace
       - ./staging:/app/staging
       - ./infrastructure:/app/infrastructure
+      - //var/run/docker.sock:/var/run/docker.sock # <--- ADD THIS LINE
     depends_on:
       - qdrant
       - redis
@@ -121,7 +122,7 @@ services:
       context: .
       dockerfile: services-python/Dockerfile
     container_name: deanos_oubliette
-    command: ["uvicorn", "oubliette.app:app", "--host", "0.0.0.0", "--port", "8002", "--reload"]
+    command: ["uvicorn", "oubliette.app:app", "--host", "0.0.0.0", "--port", "8002", "--reload", "--reload-exclude", "staging/*"]
     ports:
       - "8002:8002"
     environment:
@@ -132,6 +133,7 @@ services:
       - ./services-python:/app
       - //var/run/docker.sock:/var/run/docker.sock  # Ensure this double slash is here for Windows!
       - ./infrastructure:/app/infrastructure
+      - ./staging:/app/staging # <--- ADD THIS LINE
     networks:
       - swarm_net
 

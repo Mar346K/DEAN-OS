@@ -9,10 +9,8 @@ venv_python = os.path.abspath(".venv/Scripts/python.exe")
 python_exe = venv_python if os.path.exists(venv_python) else sys.executable
 
 SERVICES = {
-    "memory": [python_exe, "services-python/mnemosyne/app.py"],
-    "sandbox": [python_exe, "services-python/oubliette/app.py"],
-    "host_telemetry": [python_exe, "infrastructure/host_telemetry.py"], # <-- NEW
-    "manager": [python_exe, "services-python/sycophant/manager.py"]  # <-- ADD THIS LINE
+    # We ONLY run the telemetry locally. Everything else lives in Docker.
+    "host_telemetry": [python_exe, "infrastructure/host_telemetry.py"]
 }
 
 processes = {}
