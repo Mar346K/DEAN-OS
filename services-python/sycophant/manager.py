@@ -210,6 +210,31 @@ async def get_output_tree():
     os.makedirs(workspace_dir, exist_ok=True)
     return _scan_directory(workspace_dir)
 
+# --- PHASE 3.5: THE RELEASE VAULT ---
+
+@app.get("/vault/tree")
+async def get_vault_tree():
+    """Scans the clean room for verified, production-ready code."""
+    vault_dir = os.path.abspath("/app/staging/projects/default/release_vault")
+    os.makedirs(vault_dir, exist_ok=True)
+    return _scan_directory(vault_dir)
+
+@app.post("/vault/read")
+async def read_vault_file(payload: dict):
+    """Reads a verified file from the Release Vault."""
+    target_path = payload.get("path")
+    if not target_path or ".." in target_path: return {"status": "error"}
+
+    vault_dir = os.path.abspath("/app/staging/projects/default/release_vault")
+    full_path = os.path.abspath(os.path.join(vault_dir, target_path))
+
+    if not full_path.startswith(vault_dir): return {"status": "error"}
+    try:
+        with open(full_path, "r", encoding="utf-8") as f:
+            return {"status": "success", "content": f.read()}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
 @app.post("/file/read")
 async def read_file(payload: dict):
     target_path = payload.get("path")

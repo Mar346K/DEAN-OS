@@ -6,6 +6,10 @@ export default function App() {
   const [activeTab, setActiveTab] = useState("SETTINGS");
   const [forensicLogs, setForensicLogs] = useState([]);
   const [workspaceFiles, setWorkspaceFiles] = useState([]);
+
+  // --- NEW: Vault Files State ---
+  const [vaultFiles, setVaultFiles] = useState([]);
+
   const [selectedPaths, setSelectedPaths] = useState(new Set());
   const [isDragging, setIsDragging] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
@@ -26,7 +30,6 @@ export default function App() {
     status: "STANDBY", cpu_usage_percent: 0, ram_usage_percent: 0, vram_usage_percent: 0, gpu_temp_c: 0
   });
 
-  // --- HEALTH LOGS STATE ---
   const [healthLogs, setHealthLogs] = useState("");
   const [activeLogService, setActiveLogService] = useState("api");
 
@@ -36,13 +39,11 @@ export default function App() {
   const [promptInput, setPromptInput] = useState("");
   const traceEndRef = useRef(null);
 
-  // --- GOVERNANCE STATE (GEMINI & OpenRouter ADDED) ---
   const [keys, setKeys] = useState({ openai: "", anthropic: "", gemini: "", openrouter: "" });
   const [keyStatus, setKeyStatus] = useState({ openai: "UNSEALED", anthropic: "UNSEALED", gemini: "UNSEALED" });
   const [budget, setBudget] = useState(1.00);
   const [budgetStatus, setBudgetStatus] = useState("SYNCED");
 
-  // Use the environment variable, fallback to localhost if it fails to load
   const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
   const fetchLogs = async () => {
@@ -69,6 +70,15 @@ export default function App() {
     } catch (err) {}
   };
 
+  // --- NEW: Fetch Vault Tree ---
+  const fetchVaultTree = async () => {
+      try {
+          const res = await fetch(`${API_BASE}/vault/tree`);
+          const data = await res.json();
+          setVaultFiles(data);
+      } catch (err) {}
+  };
+
   const fetchHealthLogs = async (service) => {
     setActiveLogService(service);
     setHealthLogs("Fetching logs from Docker Daemon...");
@@ -84,12 +94,12 @@ export default function App() {
   useEffect(() => {
     if (activeTab === "LOGS") fetchLogs();
     if (activeTab === "WORKSPACE") fetchWorkspace();
-    if (activeTab === "STAGING") fetchOutputTree();
+    if (activeTab === "FACTORY_FLOOR") fetchOutputTree();
+    if (activeTab === "RELEASE_VAULT") fetchVaultTree();
     if (activeTab === "SYSTEM_HEALTH") fetchHealthLogs(activeLogService);
   }, [activeTab]);
 
   useEffect(() => {
-    // Strip http/s from API_BASE and replace with ws
     const wsUrl = API_BASE.replace(/^http/, "ws") + "/ws";
     const ws = new WebSocket(wsUrl);
     ws.onmessage = (event) => {
@@ -151,7 +161,6 @@ export default function App() {
   useEffect(() => { traceEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [traceLogs]);
   useEffect(() => { validationLogEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [validationLogs]);
 
-  // --- GOVERNANCE HANDLERS ---
   const handleSaveKey = async (provider) => {
     setKeyStatus(prev => ({ ...prev, [provider]: "ENCRYPTING..." }));
     try {
@@ -180,7 +189,6 @@ export default function App() {
       } catch (err) { setBudgetStatus("FAILED"); }
   };
 
-  // --- BRUTE FORCE HANDLERS ---
   const handlePurge = async () => {
       try {
           await fetch(`${API_BASE}/staging/purge`, { method: "POST" });
@@ -234,7 +242,6 @@ export default function App() {
     } catch (err) {} finally { setIsDeleting(false); }
   };
 
-  // --- NEW HANDLER: PRUNE VENV ---
   const handlePruneVenv = async () => {
       setIsDeleting(true);
       try {
@@ -251,11 +258,16 @@ export default function App() {
       catch (err) { setIsMapping(false); }
   };
 
-  const handleLoadFile = async (path, errorTraceback = null) => {
+  // --- NEW: Multi-Directory File Loader ---
+  const handleLoadFile = async (path, type = "staging", errorTraceback = null) => {
       setActiveFilePath(path);
       setActiveError(errorTraceback);
+
+      // Determine which endpoint to hit based on where the file lives
+      const endpoint = type === "vault" ? "/vault/read" : "/file/read";
+
       try {
-          const res = await fetch(`${API_BASE}/file/read`, {
+          const res = await fetch(`${API_BASE}${endpoint}`, {
               method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path })
           });
           const data = await res.json();
@@ -334,15 +346,16 @@ export default function App() {
     ));
   };
 
-  const renderOutputTree = (nodes) => {
+  // --- UPDATED: Pass directory type to loader ---
+  const renderOutputTree = (nodes, type = "staging") => {
     return nodes.map((node, i) => (
       <div key={i} className="ml-3 mt-1">
-        <div onClick={() => node.type === "file" && handleLoadFile(node.path, null)} className={`flex items-center gap-2 font-mono text-[11px] p-1.5 border border-outline-variant/10 rounded-sm transition-colors cursor-pointer ${activeFilePath === node.path ? 'bg-primary-container/20 border-primary-container/50' : 'bg-[#1a1a1c] hover:bg-[#222225]'}`}>
+        <div onClick={() => node.type === "file" && handleLoadFile(node.path, type)} className={`flex items-center gap-2 font-mono text-[11px] p-1.5 border border-outline-variant/10 rounded-sm transition-colors cursor-pointer ${activeFilePath === node.path ? 'bg-primary-container/20 border-primary-container/50' : 'bg-[#1a1a1c] hover:bg-[#222225]'}`}>
           <span className={node.type === "folder" ? "text-secondary-container font-bold" : "text-primary-container"}>
             {node.type === "folder" ? "📁" : "📄"} {node.name}
           </span>
         </div>
-        {node.children && <div className="border-l border-outline-variant/20 ml-2 pl-2">{renderOutputTree(node.children)}</div>}
+        {node.children && <div className="border-l border-outline-variant/20 ml-2 pl-2">{renderOutputTree(node.children, type)}</div>}
       </div>
     ));
   };
@@ -355,7 +368,8 @@ export default function App() {
         <div className="flex items-center gap-12">
             <div className="text-xl font-black text-[#00f3ff] tracking-tighter font-headline neon-glow-cyan">DEAN_OS_v3.0</div>
             <nav className="hidden lg:flex gap-8 font-headline text-[10px] font-bold tracking-[0.2em] mt-1">
-                {["AST_MAPPER", "STAGING", "WORKSPACE", "LOGS", "SYSTEM_HEALTH", "SETTINGS"].map(tab => (
+                {/* --- UI UPDATE: TABS RENAMED AND ADDED --- */}
+                {["WORKSPACE", "FACTORY_FLOOR", "RELEASE_VAULT", "AST_MAPPER", "LOGS", "SYSTEM_HEALTH", "SETTINGS"].map(tab => (
                     <button key={tab} onClick={() => setActiveTab(tab)} className={`transition-colors pb-4 ${activeTab === tab ? "text-primary-container border-b-2 border-primary-container" : "text-on-surface-variant hover:text-white"}`}>
                         {tab.replace("_", " ")}
                     </button>
@@ -558,7 +572,6 @@ export default function App() {
             </div>
         )}
 
-        {/* --- EXISTING TABS (AST, STAGING, WORKSPACE, LOGS) ... --- */}
         {activeTab === "AST_MAPPER" && (
             <>
                 <div className="flex justify-between items-end mb-4">
@@ -576,26 +589,24 @@ export default function App() {
             </>
         )}
 
-        {activeTab === "STAGING" && (
+        {/* --- TIER 2: FACTORY FLOOR (Formerly Staging) --- */}
+        {activeTab === "FACTORY_FLOOR" && (
             <div className="flex-1 flex flex-col h-full">
                 <div className="flex justify-between items-end mb-4">
                     <div>
-                        <h1 className="font-headline text-4xl font-black text-on-surface tracking-tighter uppercase mb-1">ASSEMBLY_LINE</h1>
+                        <h1 className="font-headline text-4xl font-black text-on-surface tracking-tighter uppercase mb-1">FACTORY_FLOOR</h1>
                         <p className="font-headline text-[10px] tracking-[0.2em] text-on-surface-variant uppercase">SWARM_ORCHESTRATION_AND_QA</p>
                     </div>
                     <div className="flex gap-3">
                         <button onClick={handlePurge} className="bg-error/10 border border-error text-error font-headline font-bold text-[10px] tracking-widest px-4 py-2 uppercase hover:bg-error hover:text-black transition-colors">
-                            PURGE ASSETS
+                            PURGE DRAFTS
                         </button>
                         <button onClick={handleKill} className="bg-error/10 border border-error text-error font-headline font-bold text-[10px] tracking-widest px-4 py-2 uppercase hover:bg-error hover:text-black transition-colors">
                             KILL SWARM
                         </button>
                         <div className="w-px h-8 bg-outline-variant/50 mx-2 self-center"></div>
                         <button onClick={fetchOutputTree} className="border border-outline-variant px-6 py-2 text-[10px] font-headline font-bold text-on-surface-variant hover:text-white uppercase tracking-widest transition-colors">
-                            REFRESH ASSETS
-                        </button>
-                        <button onClick={handleGenerateOutputMap} disabled={isMapping} className="bg-primary-container text-[#131315] font-headline font-black text-[10px] tracking-widest px-6 py-2 uppercase transition-all hover:brightness-110 active:scale-95 disabled:opacity-50 shadow-[0_0_15px_rgba(0,243,255,0.4)]">
-                            {isMapping ? "MAPPING..." : "MAP GENERATED ARCHITECTURE"}
+                            REFRESH VIEW
                         </button>
                     </div>
                 </div>
@@ -603,10 +614,10 @@ export default function App() {
                 <div className="flex-1 flex gap-4 h-[calc(100%-4rem)] overflow-hidden">
                     <div className="w-1/4 flex flex-col gap-4">
                         <div className="flex-1 bg-surface-container-lowest border border-outline-variant/20 p-4 overflow-y-auto terminal-scrollbar shadow-inner">
-                            <h2 className="text-primary-container font-headline font-bold text-[10px] tracking-widest mb-3 border-b border-outline-variant/20 pb-2">GENERATED_ASSETS</h2>
+                            <h2 className="text-primary-container font-headline font-bold text-[10px] tracking-widest mb-3 border-b border-outline-variant/20 pb-2">ACTIVE_DRAFTS</h2>
                             {outputFiles.length === 0 ? (
-                                <div className="text-on-surface-variant/50 italic font-mono text-[10px]">No generated assets found.</div>
-                            ) : renderOutputTree(outputFiles)}
+                                <div className="text-on-surface-variant/50 italic font-mono text-[10px]">No active tasks.</div>
+                            ) : renderOutputTree(outputFiles, "staging")}
                         </div>
 
                         <div className="h-1/3 bg-[#1a1111] border border-error/30 p-4 overflow-y-auto terminal-scrollbar shadow-inner flex flex-col">
@@ -615,11 +626,11 @@ export default function App() {
                                 <span className="text-[8px] bg-error/20 text-error px-1.5 py-0.5 rounded-sm">{quarantineFiles.length} FILES</span>
                             </h2>
                             {quarantineFiles.length === 0 ? (
-                                <div className="text-error/50 italic font-mono text-[10px] mt-4 text-center">No modules currently require HITL intervention.</div>
+                                <div className="text-error/50 italic font-mono text-[10px] mt-4 text-center">No manual intervention required.</div>
                             ) : (
                                 <div className="flex flex-col gap-2 flex-1 overflow-y-auto terminal-scrollbar">
                                     {quarantineFiles.map((qFile, i) => (
-                                        <div key={i} onClick={() => handleLoadFile(qFile.filename, qFile.error_traceback)} className={`p-2 border cursor-pointer font-mono text-[10px] transition-all ${activeFilePath === qFile.filename ? 'bg-error/20 border-error' : 'bg-black border-error/30 hover:border-error/60 text-error'}`}>
+                                        <div key={i} onClick={() => handleLoadFile(qFile.filename, "staging", qFile.error_traceback)} className={`p-2 border cursor-pointer font-mono text-[10px] transition-all ${activeFilePath === qFile.filename ? 'bg-error/20 border-error' : 'bg-black border-error/30 hover:border-error/60 text-error'}`}>
                                             <div className="font-bold flex items-center gap-1">⚠️ {qFile.filename}</div>
                                             <div className="text-error/70 text-[9px] truncate">Failed Attempt {qFile.attempt}</div>
                                         </div>
@@ -642,7 +653,7 @@ export default function App() {
                                 <code className="text-error/90 font-mono text-[10px] whitespace-pre-wrap block leading-tight">{activeError}</code>
                             </div>
                         )}
-                        <textarea className="flex-1 bg-transparent p-6 font-mono text-[13px] text-on-surface-variant outline-none resize-none terminal-scrollbar leading-relaxed" value={activeFileContent} onChange={(e) => setActiveFileContent(e.target.value)} spellCheck="false" placeholder={activeFilePath ? "Loading..." : "Select a generated asset or quarantined file to view/edit code."} disabled={!activeFilePath} />
+                        <textarea className="flex-1 bg-transparent p-6 font-mono text-[13px] text-on-surface-variant outline-none resize-none terminal-scrollbar leading-relaxed" value={activeFileContent} onChange={(e) => setActiveFileContent(e.target.value)} spellCheck="false" placeholder={activeFilePath ? "Loading..." : "Select a drafted asset or quarantined file to view/edit code."} disabled={!activeFilePath} />
                     </div>
 
                     <div className="w-1/4 bg-[#08080a] border border-outline-variant/20 p-4 overflow-y-auto terminal-scrollbar flex flex-col shadow-inner">
@@ -660,6 +671,36 @@ export default function App() {
                             )}
                             <div ref={validationLogEndRef} />
                         </div>
+                    </div>
+                </div>
+            </div>
+        )}
+
+        {/* --- TIER 3: RELEASE VAULT (NEW) --- */}
+        {activeTab === "RELEASE_VAULT" && (
+            <div className="flex-1 flex flex-col h-full">
+                <div className="flex justify-between items-end mb-4">
+                    <div>
+                        <h1 className="font-headline text-4xl font-black text-on-surface tracking-tighter uppercase mb-1 text-[#00ff9d]">RELEASE_VAULT</h1>
+                        <p className="font-headline text-[10px] tracking-[0.2em] text-[#00ff9d]/70 uppercase">VERIFIED_PRODUCTION_CODE</p>
+                    </div>
+                    <button onClick={fetchVaultTree} className="border border-[#00ff9d]/50 text-[#00ff9d] px-6 py-2 text-[10px] font-headline font-bold hover:bg-[#00ff9d]/10 uppercase tracking-widest transition-colors">
+                        REFRESH VAULT
+                    </button>
+                </div>
+
+                <div className="flex-1 flex gap-4 h-[calc(100%-4rem)] overflow-hidden">
+                    <div className="w-1/3 bg-surface-container-lowest border border-[#00ff9d]/20 p-4 overflow-y-auto terminal-scrollbar shadow-inner">
+                        <h2 className="text-[#00ff9d] font-headline font-bold text-[10px] tracking-widest mb-3 border-b border-[#00ff9d]/20 pb-2">VERIFIED_MODULES</h2>
+                        {vaultFiles.length === 0 ? (
+                            <div className="text-on-surface-variant/50 italic font-mono text-[10px]">Vault is currently empty. Awaiting agent promotion.</div>
+                        ) : renderOutputTree(vaultFiles, "vault")}
+                    </div>
+                    <div className="w-2/3 flex flex-col bg-[#0c0c0e] border border-[#00ff9d]/30 shadow-2xl relative">
+                        <div className="bg-[#18181b] p-2 px-4 border-b border-[#00ff9d]/30 flex justify-between items-center">
+                            <span className="text-[#00ff9d] font-mono text-[11px] font-bold">{activeFilePath ? `🔒 ${activeFilePath}` : "NO_FILE_SELECTED"}</span>
+                        </div>
+                        <textarea className="flex-1 bg-transparent p-6 font-mono text-[13px] text-[#00ff9d]/80 outline-none resize-none terminal-scrollbar leading-relaxed selection:bg-[#00ff9d]/30" value={activeFileContent} readOnly spellCheck="false" placeholder={activeFilePath ? "Loading..." : "Select a verified module to view source."} />
                     </div>
                 </div>
             </div>
@@ -683,13 +724,14 @@ export default function App() {
             </div>
         )}
 
+        {/* --- TIER 1: WORKSPACE (The Library) --- */}
         {activeTab === "WORKSPACE" && (
             <div className="flex-1 flex gap-8 h-full">
                 <div className="w-1/2 flex flex-col">
                     <div className="flex justify-between items-end mb-4">
                         <div>
-                            <h1 className="font-headline text-4xl font-black uppercase mb-1">PRODUCTION_ENV</h1>
-                            <p className="font-headline text-[10px] tracking-[0.2em] text-on-surface-variant">MANUAL_PRUNING_REQUIRED</p>
+                            <h1 className="font-headline text-4xl font-black uppercase mb-1">SOURCE_LIBRARY</h1>
+                            <p className="font-headline text-[10px] tracking-[0.2em] text-on-surface-variant">READ_ONLY_CONTEXT</p>
                         </div>
                     </div>
                     {workspaceFiles.length > 0 && (
@@ -706,16 +748,16 @@ export default function App() {
                         </div>
                     )}
                     <div className="flex-1 overflow-y-auto bg-surface-container-lowest border border-outline-variant/20 p-4 terminal-scrollbar">
-                        {workspaceFiles.length === 0 ? <div className="text-on-surface-variant/50 italic font-mono text-[11px]">Workspace is empty. Drop a ZIP to begin.</div> : renderWorkspaceTree(workspaceFiles)}
+                        {workspaceFiles.length === 0 ? <div className="text-on-surface-variant/50 italic font-mono text-[11px]">Workspace is empty. Drop a ZIP to begin context extraction.</div> : renderWorkspaceTree(workspaceFiles)}
                     </div>
                 </div>
                 <div className="w-1/2 flex flex-col">
                     <div className="mb-4">
                         <h1 className="font-headline text-4xl font-black mb-1">INTAKE_FORGE</h1>
-                        <p className="font-headline text-[10px] tracking-[0.2em] text-on-surface-variant">AIR_GAPPED_EXTRACTION</p>
+                        <p className="font-headline text-[10px] tracking-[0.2em] text-on-surface-variant">RAG_VECTORIZATION_ENGINE</p>
                     </div>
                     <div onDragOver={(e) => {e.preventDefault(); setIsDragging(true);}} onDragLeave={() => setIsDragging(false)} onDrop={handleDrop} className={`flex-1 flex flex-col items-center justify-center border-2 border-dashed transition-all ${isDragging ? 'border-primary-container bg-primary-container/10' : 'border-outline-variant/50 bg-surface-container-lowest'} ${isUploading ? 'opacity-50' : ''}`}>
-                        {isUploading ? <div className="text-center animate-pulse"><h2 className="font-headline text-lg font-bold text-primary-container uppercase">Extracting...</h2></div> : <div className="text-center pointer-events-none"><div className="text-outline-variant text-4xl mb-4">📥</div><h2 className="font-headline text-lg font-bold text-on-surface-variant uppercase tracking-widest">Drop Codebase (.ZIP)</h2></div>}
+                        {isUploading ? <div className="text-center animate-pulse"><h2 className="font-headline text-lg font-bold text-primary-container uppercase">Extracting & Vectorizing...</h2></div> : <div className="text-center pointer-events-none"><div className="text-outline-variant text-4xl mb-4">📥</div><h2 className="font-headline text-lg font-bold text-on-surface-variant uppercase tracking-widest">Drop Codebase (.ZIP)</h2></div>}
                     </div>
                 </div>
             </div>

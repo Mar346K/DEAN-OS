@@ -4,6 +4,7 @@ import os
 import sys
 import uuid
 import ast
+import shutil
 from celery import Celery
 import redis
 
@@ -23,7 +24,6 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, Asyn
 from database.models import SwarmRun, TaskTrace
 
 # 1. Initialize the Celery App connected to Redis
-# If running on Windows, use 6380. If inside Docker, it will use the env var.
 is_local = os.getenv("REDIS_HOST") is None
 redis_host = "127.0.0.1" if is_local else os.getenv("REDIS_HOST")
 redis_port = 6380 if is_local else 6379
@@ -59,7 +59,7 @@ def _create_hollow_files(workspace_dir: str, blueprint: dict):
         with open(filepath, "w", encoding="utf-8") as f:
             f.write(content)
 
-# --- THE V5.0 FSM ORCHESTRATOR ---
+# --- THE V5.1 FSM ORCHESTRATOR (3-TIER PIPELINE) ---
 async def async_execute_assembly_line(prompt: str, project_id_str: str = "00000000-0000-0000-0000-000000000000"):
     DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://deanos_admin:deanos_vault_2026@db/deanos_history")
     engine = create_async_engine(DATABASE_URL, pool_size=5, max_overflow=10)
@@ -74,7 +74,7 @@ async def async_execute_assembly_line(prompt: str, project_id_str: str = "000000
             run_id = run.id
             p_tag = str(pid) if pid else "default"
 
-            broadcast_to_ui({"type": "agent_trace", "payload": {"trace_id": "SYS-001", "agent": "Manager", "action": f"Initiating Graph-Native Assembly Line...", "status": "running"}})
+            broadcast_to_ui({"type": "agent_trace", "payload": {"trace_id": "SYS-001", "agent": "Manager", "action": f"Initiating 3-Tier Assembly Line...", "status": "running"}})
             await log_trace(db, run_id, "SYS-001", "Manager", f"Initiating Assembly Line for: {prompt}", "success")
 
             # --- PHASE 1: CLOUD RESEARCH ---
@@ -97,25 +97,24 @@ async def async_execute_assembly_line(prompt: str, project_id_str: str = "000000
 
             await log_trace(db, run_id, "ARCH-001", "Architect", "DAG Blueprint generated.", "success", json.dumps(blueprint))
 
-            # --- PHASE 3: HOLLOW BUILD ---
+            # --- PHASE 3: HOLLOW BUILD (STAGING) ---
             workspace_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), f"../../../staging/projects/{p_tag}/workspace"))
             os.makedirs(workspace_dir, exist_ok=True)
             _create_hollow_files(workspace_dir, blueprint)
 
-            # Update UI with the full graph
             ui_nodes = [{"id": n["filename"], "group": "python", "churn_score": 1} for n in blueprint.get("nodes", [])]
             ui_edges = blueprint.get("edges", [])
             broadcast_to_ui({"type": "ast_map", "payload": {"nodes": ui_nodes, "edges": ui_edges}})
 
             # --- PHASE 4: ATOMIC NODE EXECUTION (THE FSM LOOP) ---
             surgeon = ASTSurgeon()
+            # deployer is technically obsolete in a 3-tier, but we leave the class call for now
             deployer = Deployer(project_id=p_tag)
 
             for idx, node in enumerate(blueprint.get("nodes", [])):
                 filename = node["filename"]
 
-                # Update UI to show which node is active
-                ui_nodes[idx]["churn_score"] = 5  # Make it pulse in the UI
+                ui_nodes[idx]["churn_score"] = 5
                 broadcast_to_ui({"type": "ast_map", "payload": {"nodes": ui_nodes, "edges": ui_edges}})
 
                 MAX_RETRIES = 2
@@ -135,16 +134,13 @@ async def async_execute_assembly_line(prompt: str, project_id_str: str = "000000
                         attempt += 1
                         continue
 
-                    # 4b. The AST Surgeon Enforces the Contract
+                    # 4b. AST Surgeon
                     try:
                         with open(raw_file_path, "r", encoding="utf-8") as f:
                             raw_code = f.read()
-
                         healed_code = surgeon.enforce_contract(raw_code, node)
-
                         with open(raw_file_path, "w", encoding="utf-8") as f:
                             f.write(healed_code)
-
                         await log_trace(db, run_id, f"CODE-{idx}-{attempt}", "AST Surgeon", f"Syntax enforced on {filename}", "success")
                     except Exception as e:
                         feedback = f"AST SURGEON REJECTED CODE: {e}"
@@ -170,17 +166,25 @@ async def async_execute_assembly_line(prompt: str, project_id_str: str = "000000
                     if report.get("status") == "pass":
                         await log_trace(db, run_id, f"ANAL-{idx}-{attempt}", "Analyzer", "Sandbox passed.", "success", str(report))
 
-                        # 4e. Deploy Node
-                        await asyncio.to_thread(deployer.deploy_module, filename)
-                        ui_nodes[idx]["churn_score"] = 0 # Mark as verified in UI
+                        # --- [NEW] 4e. PROMOTION TO RELEASE VAULT ---
+                        vault_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), f"../../../staging/projects/{p_tag}/release_vault"))
+                        os.makedirs(vault_dir, exist_ok=True)
+
+                        vault_file_path = os.path.join(vault_dir, filename)
+
+                        # Move the verified code to the clean room
+                        shutil.copyfile(raw_file_path, vault_file_path)
+
+                        broadcast_to_ui({"type": "agent_trace", "payload": {"trace_id": f"DEP-{idx}", "agent": "Orchestrator", "action": f"Module {filename} verified and promoted to Release Vault.", "status": "success"}})
+
+                        ui_nodes[idx]["churn_score"] = 0
                         broadcast_to_ui({"type": "ast_map", "payload": {"nodes": ui_nodes, "edges": ui_edges}})
-                        break # Node complete, move to next node
+                        break
                     else:
                         feedback = report.get("logs", "Execution Error")
                         await log_trace(db, run_id, f"ANAL-{idx}-{attempt}", "Analyzer", "Sandbox failed.", "error", feedback)
                         attempt += 1
 
-                # Check if the node exhausted its retries
                 if attempt > MAX_RETRIES:
                     broadcast_to_ui({"type": "agent_trace", "payload": {"trace_id": f"SYS-ERR-{idx}", "agent": "Manager", "action": f"Node {filename} FAILED. Halting Graph Traversal.", "status": "error"}})
                     run.status = "NEEDS_INTERVENTION"
@@ -197,12 +201,11 @@ async def async_execute_assembly_line(prompt: str, project_id_str: str = "000000
                             "run_id": str(run_id)
                         }
                     })
-                    return # Halt the entire pipeline until the human fixes it
+                    return
 
-            # If the loop finishes naturally, the whole graph is deployed!
             run.status = "COMPLETED"
             await db.commit()
-            broadcast_to_ui({"type": "agent_trace", "payload": {"trace_id": "SYS-999", "agent": "Manager", "action": "All Graph Nodes Compiled and Deployed.", "status": "success"}})
+            broadcast_to_ui({"type": "agent_trace", "payload": {"trace_id": "SYS-999", "agent": "Manager", "action": "All Modules Verified. Release Vault Populated.", "status": "success"}})
 
         finally:
             await engine.dispose()
