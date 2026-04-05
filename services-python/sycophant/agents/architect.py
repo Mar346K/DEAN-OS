@@ -2,6 +2,7 @@ import json
 import os
 import requests
 import valkyrie_crypto
+from sycophant.tools.security import redact_sensitive_info
 
 class Architect:
     """
@@ -86,7 +87,9 @@ class Architect:
             raw_output = response.json()['candidates'][0]['content']['parts'][0]['text']
             return json.loads(raw_output)
         except Exception as e:
-            print(f"[ARCHITECT ERROR] Failed to generate DAG: {e}")
+            # SECURE LOGGING
+            safe_error = redact_sensitive_info(str(e))
+            print(f"[ARCHITECT ERROR] Failed to generate DAG: {safe_error}")
             return None
 
     def _simulate_ghost_execution(self, blueprint: dict, api_key: str) -> dict:
@@ -120,5 +123,7 @@ class Architect:
             raw_output = response.json()['candidates'][0]['content']['parts'][0]['text']
             return json.loads(raw_output)
         except Exception as e:
-            print(f"[TWIN ERROR] Simulation failed, defaulting to PASS to prevent deadlock: {e}")
+            # SECURE LOGGING
+            safe_error = redact_sensitive_info(str(e))
+            print(f"[TWIN ERROR] Simulation failed, defaulting to PASS to prevent deadlock: {safe_error}")
             return {"status": "PASS", "reason": "Simulation bypassed due to timeout.", "estimated_ms": 0}

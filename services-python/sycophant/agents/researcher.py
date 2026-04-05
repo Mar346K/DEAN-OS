@@ -1,6 +1,7 @@
 import os
 import requests
 import valkyrie_crypto
+from sycophant.tools.security import redact_sensitive_info
 
 class CloudResearcher:
     """
@@ -47,7 +48,9 @@ class CloudResearcher:
             )
 
             if response.status_code != 200:
-                print(f"[RESEARCHER ❌] API Error: {response.status_code} - {response.text}")
+                # SECURE LOGGING: Scrub the response text just in case it mirrors the URL
+                safe_error_text = redact_sensitive_info(response.text)
+                print(f"[RESEARCHER ❌] API Error: {response.status_code} - {safe_error_text}")
                 return "ERROR: Cloud API rejected the request."
 
             data = response.json()
@@ -65,5 +68,7 @@ class CloudResearcher:
             print("[RESEARCHER 🛑] Connection to Google Labs timed out.")
             return "ERROR: Cloud API Timeout."
         except Exception as e:
-            print(f"[RESEARCHER ❌] Fatal Error: {e}")
-            return f"ERROR: {e}"
+            # SECURE LOGGING: Scrub the exception string
+            safe_error = redact_sensitive_info(str(e))
+            print(f"[RESEARCHER ❌] Fatal Error: {safe_error}")
+            return f"ERROR: {safe_error}"

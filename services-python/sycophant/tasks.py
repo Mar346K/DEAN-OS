@@ -5,6 +5,7 @@ import sys
 import uuid
 import ast
 import shutil
+import re
 from celery import Celery
 import redis
 
@@ -19,6 +20,7 @@ from agents.tester import Tester
 from agents.analyzer import Analyzer
 from agents.deployer import Deployer
 from tools.ast_surgeon import ASTSurgeon
+from sycophant.tools.security import redact_sensitive_info
 
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from database.models import SwarmRun, TaskTrace
@@ -34,19 +36,28 @@ celery_app = Celery("swarm_tasks", broker=CELERY_BROKER_URL)
 # 2. Initialize the Redis Client for Pub/Sub Broadcasting
 redis_client = redis.Redis(host=redis_host, port=redis_port, db=0, decode_responses=True)
 
+# --- SECURITY: LOG REDACTOR ---
+
 def broadcast_to_ui(message: dict):
-    redis_client.publish("ui_broadcasts", json.dumps(message))
+    """Scrubs and publishes messages to the UI WebSocket."""
+    # Serialize, redact, and re-parse to ensure all nested content is scrubbed
+    raw_payload = json.dumps(message)
+    scrubbed_payload = redact_sensitive_info(raw_payload)
+    redis_client.publish("ui_broadcasts", scrubbed_payload)
 
 async def log_trace(db: AsyncSession, run_id: uuid.UUID, trace_id: str, agent_name: str, action: str, status: str, logs: str = None):
-    trace = TaskTrace(run_id=run_id, trace_id=trace_id, agent_name=agent_name, action=action, status=status, logs=logs)
+    """Scrubs and saves a trace to the persistent PostgreSQL database."""
+    safe_action = redact_sensitive_info(action)
+    safe_logs = redact_sensitive_info(logs) if logs else None
+
+    trace = TaskTrace(run_id=run_id, trace_id=trace_id, agent_name=agent_name, action=safe_action, status=status, logs=safe_logs)
     db.add(trace)
     await db.commit()
 
+# --- ORCHESTRATION HELPERS ---
+
 def _create_hollow_files(workspace_dir: str, blueprint: dict):
-    """
-    Physically creates the files on disk with empty function signatures (The Contract)
-    before the Coder ever touches them.
-    """
+    """Physically creates the files on disk with empty function signatures."""
     print("[ORCHESTRATOR] 🧱 Building Hollow File Skeleton...")
     for node in blueprint.get("nodes", []):
         filepath = os.path.join(workspace_dir, node["filename"])
@@ -60,7 +71,8 @@ def _create_hollow_files(workspace_dir: str, blueprint: dict):
             f.write(content)
 
 # --- THE V5.1 FSM ORCHESTRATOR (3-TIER PIPELINE) ---
-async def async_execute_assembly_line(prompt: str, project_id_str: str = "00000000-0000-0000-0000-000000000000"):
+
+async def async_execute_assembly_line(prompt: str, project_id_str: str = "00000000-0000-0000-0000-000000000000", rush_mode: bool = False):
     DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://deanos_admin:deanos_vault_2026@db/deanos_history")
     engine = create_async_engine(DATABASE_URL, pool_size=5, max_overflow=10)
     AsyncSessionLocal = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
@@ -108,12 +120,10 @@ async def async_execute_assembly_line(prompt: str, project_id_str: str = "000000
 
             # --- PHASE 4: ATOMIC NODE EXECUTION (THE FSM LOOP) ---
             surgeon = ASTSurgeon()
-            # deployer is technically obsolete in a 3-tier, but we leave the class call for now
             deployer = Deployer(project_id=p_tag)
 
             for idx, node in enumerate(blueprint.get("nodes", [])):
                 filename = node["filename"]
-
                 ui_nodes[idx]["churn_score"] = 5
                 broadcast_to_ui({"type": "ast_map", "payload": {"nodes": ui_nodes, "edges": ui_edges}})
 
@@ -125,7 +135,6 @@ async def async_execute_assembly_line(prompt: str, project_id_str: str = "000000
                     action_msg = f"Atomic Coder targeting {filename}..." if attempt == 1 else f"Fixing errors in {filename} (Attempt {attempt})..."
                     broadcast_to_ui({"type": "agent_trace", "payload": {"trace_id": f"CODE-{idx}-{attempt}", "agent": "Coder", "action": action_msg, "status": "running"}})
 
-                    # 4a. Write Logic
                     coder = MainCoder(project_id=p_tag)
                     raw_file_path = await asyncio.to_thread(coder.write_module, blueprint, node, feedback, attempt)
 
@@ -134,7 +143,6 @@ async def async_execute_assembly_line(prompt: str, project_id_str: str = "000000
                         attempt += 1
                         continue
 
-                    # 4b. AST Surgeon
                     try:
                         with open(raw_file_path, "r", encoding="utf-8") as f:
                             raw_code = f.read()
@@ -147,7 +155,6 @@ async def async_execute_assembly_line(prompt: str, project_id_str: str = "000000
                         attempt += 1
                         continue
 
-                    # 4c. Write Tests
                     broadcast_to_ui({"type": "agent_trace", "payload": {"trace_id": f"TEST-{idx}-{attempt}", "agent": "Tester", "action": f"Testing {filename}...", "status": "running"}})
                     tester = Tester(project_id=p_tag)
                     test_file_path = await asyncio.to_thread(tester.write_tests, filename, feedback, attempt)
@@ -157,7 +164,6 @@ async def async_execute_assembly_line(prompt: str, project_id_str: str = "000000
                         attempt += 1
                         continue
 
-                    # 4d. Sandbox Evaluation
                     broadcast_to_ui({"type": "agent_trace", "payload": {"trace_id": f"ANAL-{idx}-{attempt}", "agent": "Analyzer", "action": "Oubliette Sandbox Verification...", "status": "running"}})
                     analyzer = Analyzer(project_id=p_tag)
                     test_filename = os.path.basename(test_file_path)
@@ -166,27 +172,34 @@ async def async_execute_assembly_line(prompt: str, project_id_str: str = "000000
                     if report.get("status") == "pass":
                         await log_trace(db, run_id, f"ANAL-{idx}-{attempt}", "Analyzer", "Sandbox passed.", "success", str(report))
 
-                        # --- [NEW] 4e. PROMOTION TO RELEASE VAULT ---
-                        vault_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), f"../../../staging/projects/{p_tag}/release_vault"))
-                        os.makedirs(vault_dir, exist_ok=True)
+                        # --- PHASE 4e. PROMOTION TO RELEASE VAULT ---
+                        try:
+                            docker_workspace_dir = f"/app/staging/projects/{p_tag}/workspace"
+                            docker_vault_dir = f"/app/staging/projects/{p_tag}/release_vault"
+                            os.makedirs(docker_vault_dir, exist_ok=True)
 
-                        vault_file_path = os.path.join(vault_dir, filename)
+                            source_file = os.path.join(docker_workspace_dir, filename)
+                            dest_file = os.path.join(docker_vault_dir, filename)
 
-                        # Move the verified code to the clean room
-                        shutil.copyfile(raw_file_path, vault_file_path)
+                            shutil.copyfile(source_file, dest_file)
+                            os.remove(source_file)
 
-                        broadcast_to_ui({"type": "agent_trace", "payload": {"trace_id": f"DEP-{idx}", "agent": "Orchestrator", "action": f"Module {filename} verified and promoted to Release Vault.", "status": "success"}})
-
-                        ui_nodes[idx]["churn_score"] = 0
-                        broadcast_to_ui({"type": "ast_map", "payload": {"nodes": ui_nodes, "edges": ui_edges}})
-                        break
+                            broadcast_to_ui({"type": "agent_trace", "payload": {"trace_id": f"DEP-{idx}", "agent": "Orchestrator", "action": f"Module {filename} verified and promoted to Release Vault.", "status": "success"}})
+                            ui_nodes[idx]["churn_score"] = 0
+                            broadcast_to_ui({"type": "ast_map", "payload": {"nodes": ui_nodes, "edges": ui_edges}})
+                            break
+                        except Exception as promotion_error:
+                            err_msg = f"Failed to move {filename} to Vault: {str(promotion_error)}"
+                            await log_trace(db, run_id, f"SYS-ERR-{idx}", "Orchestrator", "Promotion Failed", "error", err_msg)
+                            broadcast_to_ui({"type": "agent_trace", "payload": {"trace_id": f"SYS-ERR-{idx}", "agent": "Orchestrator", "action": err_msg, "status": "error"}})
+                            break
                     else:
                         feedback = report.get("logs", "Execution Error")
                         await log_trace(db, run_id, f"ANAL-{idx}-{attempt}", "Analyzer", "Sandbox failed.", "error", feedback)
                         attempt += 1
 
                 if attempt > MAX_RETRIES:
-                    broadcast_to_ui({"type": "agent_trace", "payload": {"trace_id": f"SYS-ERR-{idx}", "agent": "Manager", "action": f"Node {filename} FAILED. Halting Graph Traversal.", "status": "error"}})
+                    broadcast_to_ui({"type": "agent_trace", "payload": {"trace_id": f"SYS-ERR-{idx}", "agent": "Manager", "action": f"Node {filename} FAILED. Halting Pipeline.", "status": "error"}})
                     run.status = "NEEDS_INTERVENTION"
                     await db.commit()
 
@@ -196,8 +209,8 @@ async def async_execute_assembly_line(prompt: str, project_id_str: str = "000000
                             "trace_id": f"SYS-ERR-{idx}",
                             "filename": filename,
                             "attempt": MAX_RETRIES,
-                            "error_traceback": feedback[-500:] if feedback else "Unknown systemic failure.",
-                            "action_required": "Fix this module in the UI editor to resume graph traversal.",
+                            "error_traceback": feedback[-500:] if feedback else "Unknown failure.",
+                            "action_required": "Fix module to resume.",
                             "run_id": str(run_id)
                         }
                     })
@@ -211,5 +224,5 @@ async def async_execute_assembly_line(prompt: str, project_id_str: str = "000000
             await engine.dispose()
 
 @celery_app.task(name="sycophant.tasks.execute_assembly_line")
-def execute_assembly_line_task(prompt: str, project_id_str: str = "00000000-0000-0000-0000-000000000000"):
-    asyncio.run(async_execute_assembly_line(prompt, project_id_str))
+def execute_assembly_line_task(prompt: str, project_id_str: str = "00000000-0000-0000-0000-000000000000", rush_mode: bool = False):
+    asyncio.run(async_execute_assembly_line(prompt, project_id_str, rush_mode))

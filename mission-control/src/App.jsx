@@ -26,9 +26,17 @@ export default function App() {
   const [quarantineFiles, setQuarantineFiles] = useState([]);
   const validationLogEndRef = useRef(null);
 
-  const [telemetry, setTelemetry] = useState({
-    status: "STANDBY", cpu_usage_percent: 0, ram_usage_percent: 0, vram_usage_percent: 0, gpu_temp_c: 0
-  });
+  // --- FINOPS & TELEMETRY STATE ---
+  const [telemetry, setTelemetry] = useState({ status: "STANDBY", cpu_usage_percent: 0, ram_usage_percent: 0, vram_usage_percent: 0, gpu_temp_c: 0 });
+  const [geminiQuota, setGeminiQuota] = useState(0); // Max 15
+  const [rushMode, setRushMode] = useState(false);
+
+  // --- ORACLE CHAT STATE ---
+  const [chatHistory, setChatHistory] = useState([
+      { role: "oracle", text: "Oracle initialized. My context window is locked to your current tab. How can I assist the Swarm?" }
+  ]);
+  const [chatInput, setChatInput] = useState("");
+  const chatEndRef = useRef(null);
 
   const [healthLogs, setHealthLogs] = useState("");
   const [activeLogService, setActiveLogService] = useState("api");
@@ -37,6 +45,7 @@ export default function App() {
   const [astNodes, setAstNodes] = useState([]);
   const [astEdges, setAstEdges] = useState([]);
   const [promptInput, setPromptInput] = useState("");
+  const [isDeploying, setIsDeploying] = useState(false);
   const traceEndRef = useRef(null);
 
   const [keys, setKeys] = useState({ openai: "", anthropic: "", gemini: "", openrouter: "" });
@@ -46,11 +55,21 @@ export default function App() {
 
   const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
+  // --- THE WATERFALL FIX ---
   const fetchLogs = async () => {
     try {
       const res = await fetch(`${API_BASE}/logs`);
       const data = await res.json();
       setForensicLogs(data);
+
+      const persistentTraces = data.slice(0, 50).reverse().map(l => ({
+          trace_id: l.trace_id,
+          agent: l.agent_name,
+          action: l.action,
+          status: l.status,
+          timestamp: l.timestamp
+      }));
+      setTraceLogs(persistentTraces);
     } catch (err) {}
   };
 
@@ -106,6 +125,7 @@ export default function App() {
       const msg = JSON.parse(event.data);
       switch(msg.type) {
         case "telemetry": setTelemetry(msg.payload); break;
+        case "quota_update": setGeminiQuota(msg.payload.rpm); break;
         case "agent_trace":
           setTraceLogs(prev => [...prev.slice(-49), msg.payload]);
           if (msg.payload.agent === "Deployer" && msg.payload.status === "success") fetchWorkspace();
@@ -160,6 +180,23 @@ export default function App() {
 
   useEffect(() => { traceEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [traceLogs]);
   useEffect(() => { validationLogEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [validationLogs]);
+
+  // --- ORACLE CHAT HANDLER ---
+  const handleChatSubmit = async (e) => {
+      e.preventDefault();
+      if (!chatInput.trim()) return;
+
+      const newMsg = { role: "user", text: chatInput };
+      setChatHistory(prev => [...prev, newMsg]);
+      setChatInput("");
+
+      setTimeout(() => {
+          setChatHistory(prev => [...prev, {
+              role: "oracle",
+              text: `I am querying the ${activeTab.replace("_", " ")} context vectors... (Backend endpoint integration pending in Phase 12).`
+          }]);
+      }, 800);
+  };
 
   const handleSaveKey = async (provider) => {
     setKeyStatus(prev => ({ ...prev, [provider]: "ENCRYPTING..." }));
@@ -366,7 +403,7 @@ export default function App() {
     <div className="bg-background text-on-surface font-body min-h-screen selection:bg-primary-container selection:text-on-primary">
       <header className="fixed top-0 w-full z-50 flex justify-between items-center px-6 h-14 bg-[#131315] shadow-[0_1px_0_0_rgba(0,243,255,0.1)]">
         <div className="flex items-center gap-12">
-            <div className="text-xl font-black text-[#00f3ff] tracking-tighter font-headline neon-glow-cyan">DEAN_OS_v3.0</div>
+            <div className="text-xl font-black text-[#00f3ff] tracking-tighter font-headline neon-glow-cyan">DEAN_OS_v5.1</div>
             <nav className="hidden lg:flex gap-8 font-headline text-[10px] font-bold tracking-[0.2em] mt-1">
                 {/* --- UI UPDATE: TABS RENAMED AND ADDED --- */}
                 {["WORKSPACE", "FACTORY_FLOOR", "RELEASE_VAULT", "AST_MAPPER", "LOGS", "SYSTEM_HEALTH", "SETTINGS"].map(tab => (
@@ -383,31 +420,72 @@ export default function App() {
         </div>
       </header>
 
-      <aside className="fixed left-0 top-14 bottom-48 w-72 z-40 flex flex-col bg-[#0e0e10] border-r border-[#3a494b]/20 p-6 overflow-y-auto">
-        <div className="flex items-center gap-3 mb-8">
+      <aside className="fixed left-0 top-14 bottom-32 w-72 z-40 flex flex-col bg-[#0e0e10] border-r border-[#3a494b]/20 p-6 overflow-y-auto terminal-scrollbar">
+        <div className="flex items-center gap-3 mb-6">
           <div className="w-2 h-2 rounded-full bg-primary-container neon-glow-cyan"></div>
           <span className="font-headline font-bold text-[10px] tracking-widest uppercase text-on-surface-variant">AETHELGARD_TELEMETRY</span>
         </div>
-        <div className="space-y-8">
-          {renderDial(telemetry.cpu_usage_percent, "CPU_LOAD", telemetry.cpu_usage_percent >= 95 ? "critical" : "normal")}
-          {renderDial(telemetry.ram_usage_percent, "RAM_UTIL", telemetry.ram_usage_percent >= 95 ? "critical" : "normal")}
-          {renderDial(telemetry.vram_usage_percent, "VRAM_POOL", telemetry.vram_usage_percent >= 85 ? "ai-load" : "normal")}
-        </div>
-        <div className="mt-auto pt-6 border-t border-outline-variant/20">
-          <div className="flex flex-col gap-2">
-              <input type="text" value={promptInput} onChange={(e) => setPromptInput(e.target.value)} placeholder="Enter system prompt..." className="w-full bg-surface-container-low border-b-2 border-outline-variant focus:border-primary-container text-primary-container font-mono text-[10px] p-2 outline-none"/>
-              <button onClick={async () => {
-                      if (!promptInput) return;
-                      await fetch(`${API_BASE}/build`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt: promptInput }) });
-                      setPromptInput("");
-                  }} className="w-full py-3 bg-gradient-to-r from-primary to-primary-container text-on-primary font-headline font-bold text-[10px] tracking-widest uppercase hover:brightness-110 active:scale-95">
-                  DEPLOY_AGENT
-              </button>
+        <div className="space-y-6 flex-1">
+          {renderDial(telemetry.cpu_usage_percent, "CPU", 100, telemetry.cpu_usage_percent >= 95 ? "critical" : "normal")}
+          {renderDial(telemetry.ram_usage_percent, "RAM", 100, telemetry.ram_usage_percent >= 95 ? "critical" : "normal")}
+          <div className="pt-4 border-t border-outline-variant/10">
+              <div className="flex justify-between items-center mb-2">
+                  <span className="text-[9px] font-mono text-secondary-container">GEMINI_QUOTA</span>
+                  <span className="text-[9px] font-mono text-on-surface-variant">{geminiQuota}/15 RPM</span>
+              </div>
+              {renderDial(geminiQuota, "RPM", 15, geminiQuota >= 14 ? "critical" : geminiQuota >= 10 ? "warning" : "normal")}
           </div>
+        </div>
+        <div className="mt-auto pt-6 border-t border-outline-variant/20 flex flex-col gap-4">
+            <div className="flex items-center justify-between bg-surface-container-lowest p-3 border border-outline-variant/10 cursor-pointer hover:border-error/50 transition-colors" onClick={() => setRushMode(!rushMode)}>
+                <div className="flex flex-col">
+                    <span className={`font-headline text-[10px] font-bold tracking-widest uppercase ${rushMode ? 'text-error drop-shadow-[0_0_5px_rgba(239,68,68,0.8)]' : 'text-on-surface-variant'}`}>RUSH_MODE</span>
+                    <span className="font-mono text-[8px] text-on-surface-variant/70">Enterprise API Override</span>
+                </div>
+                <div className={`w-8 h-4 rounded-full flex items-center p-0.5 transition-colors ${rushMode ? 'bg-error' : 'bg-outline-variant/30'}`}>
+                    <div className={`w-3 h-3 bg-white rounded-full transition-transform ${rushMode ? 'translate-x-4' : 'translate-x-0'}`}></div>
+                </div>
+            </div>
+            <input type="text" value={promptInput} onChange={(e) => setPromptInput(e.target.value)} placeholder="Enter system prompt..." className="w-full bg-surface-container-low border-b-2 border-outline-variant focus:border-primary-container text-primary-container font-mono text-[10px] p-2 outline-none"/>
+            <button
+                    disabled={!promptInput || isDeploying}
+                    onClick={async () => {
+                        if (!promptInput || isDeploying) return;
+
+                        // 1. Lock the button to prevent double-firing
+                        setIsDeploying(true);
+
+                        // 2. Instantly wipe old logs and inject a UI-only starting message
+                        setTraceLogs([{
+                            trace_id: "UI-BOOT",
+                            agent: "System",
+                            action: `Dispatching task to Factory Floor (Rush Mode: ${rushMode ? 'ON' : 'OFF'})...`,
+                            status: "running",
+                            timestamp: new Date().toISOString()
+                        }]);
+
+                        // 3. Send the actual API request
+                        try {
+                            await fetch(`${API_BASE}/build`, {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ prompt: promptInput, rush_mode: rushMode })
+                            });
+                            setPromptInput("");
+                        } catch (err) {
+                            console.error(err);
+                        } finally {
+                            // 4. Unlock the button after 3 seconds
+                            setTimeout(() => setIsDeploying(false), 3000);
+                        }
+                    }}
+                    className="w-full py-3 bg-gradient-to-r from-primary to-primary-container text-on-primary font-headline font-bold text-[10px] tracking-widest uppercase hover:brightness-110 active:scale-95 shadow-[0_0_10px_rgba(0,243,255,0.2)] disabled:opacity-50 disabled:cursor-not-allowed transition-all">
+                    {isDeploying ? "TRANSMITTING..." : "DEPLOY_AGENT"}
+                </button>
         </div>
       </aside>
 
-      <main className="ml-72 mt-14 mb-48 p-8 h-[calc(100vh-14rem)] relative flex flex-col">
+      <main className="ml-72 mt-14 mb-32 pr-80 p-8 h-[calc(100vh-14rem)] relative flex flex-col">
 
         {/* --- GOVERNANCE HUB (SETTINGS) --- */}
         {activeTab === "SETTINGS" && (
@@ -763,18 +841,49 @@ export default function App() {
             </div>
         )}
       </main>
+      <aside className="fixed right-0 top-14 bottom-32 w-80 bg-[#08080a] border-l border-[#3a494b]/30 flex flex-col z-40 shadow-[-10px_0_30px_rgba(0,0,0,0.5)]">
+          <div className="bg-[#131315] border-b border-outline-variant/10 p-4 flex flex-col gap-1">
+              <div className="flex items-center gap-2 text-secondary-container">
+                  <span className="text-xl">👁️</span>
+                  <h2 className="font-headline font-black text-lg tracking-widest uppercase">THE_ORACLE</h2>
+              </div>
+              <div className="font-mono text-[9px] text-on-surface-variant uppercase flex items-center gap-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-secondary-container animate-pulse"></span>
+                  CONTEXT: {activeTab.replace("_", " ")}
+              </div>
+          </div>
+          <div className="flex-1 overflow-y-auto terminal-scrollbar p-4 space-y-4">
+              {chatHistory.map((msg, i) => (
+                  <div key={i} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
+                      <div className={`max-w-[85%] p-3 rounded-md text-[11px] font-mono leading-relaxed ${msg.role === 'user' ? 'bg-primary-container/20 text-primary-container border border-primary-container/30' : 'bg-surface-container-low text-on-surface border border-outline-variant/20'}`}>{msg.text}</div>
+                      <span className="text-[8px] text-on-surface-variant/50 mt-1 uppercase tracking-widest">{msg.role === 'user' ? 'HUMAN' : 'ORACLE'}</span>
+                  </div>
+              ))}
+              <div ref={chatEndRef} />
+          </div>
+          <div className="p-4 border-t border-outline-variant/10 bg-[#131315]">
+              <form onSubmit={handleChatSubmit} className="flex gap-2">
+                  <input type="text" value={chatInput} onChange={(e) => setChatInput(e.target.value)} placeholder="Ask the Oracle..." className="flex-1 bg-surface-container-lowest border border-outline-variant/30 rounded-sm px-3 py-2 text-[10px] font-mono text-on-surface outline-none focus:border-secondary-container transition-colors" />
+                  <button type="submit" disabled={!chatInput.trim()} className="bg-secondary-container/20 text-secondary-container border border-secondary-container/50 px-3 py-2 rounded-sm hover:bg-secondary-container hover:text-black transition-colors disabled:opacity-30">➔</button>
+              </form>
+          </div>
+      </aside>
 
-      <footer className="fixed bottom-0 left-0 right-0 h-48 bg-[#131315]/90 border-t border-[#3a494b]/30 z-50 p-4 flex flex-col">
-        <div className="flex items-center justify-between mb-2 border-b border-outline-variant/10 pb-2 pl-72">
-          <span className="font-headline text-[10px] font-bold text-primary-container tracking-widest uppercase">WATERFALL_TRACE</span>
+      <footer className="fixed bottom-0 left-0 right-0 h-32 bg-[#0c0c0e]/95 border-t border-[#3a494b]/50 z-50 p-0 flex flex-col backdrop-blur-md">
+        <div className="flex items-center justify-between border-b border-outline-variant/20 py-1.5 px-4 bg-[#131315]">
+          <span className="font-headline text-[10px] font-bold text-primary-container tracking-widest uppercase flex items-center gap-2"><div className="w-1.5 h-1.5 bg-primary-container rounded-full animate-pulse"></div>WATERFALL_TRACE</span>
+          <span className="text-[9px] font-mono text-on-surface-variant/50 uppercase pr-80">Live Pipeline Execution Ledger</span>
         </div>
-        <div className="flex-1 overflow-y-auto terminal-scrollbar font-mono text-[11px] space-y-1 p-2 bg-surface-container-lowest ml-72">
-          {traceLogs.map((log, i) => (
-            <div key={i} className={log.status === 'error' ? 'text-secondary-container font-bold' : 'text-primary-container'}>
-              <span className="opacity-50">[{new Date().toLocaleTimeString()}]</span> [TASK: {log.trace_id}] [AGENT: {log.agent}] {log.action}
-            </div>
+        <div className="flex-1 overflow-y-auto terminal-scrollbar font-mono text-[11px] space-y-1.5 p-4 pl-8 pr-80">
+          {traceLogs.length === 0 ? <div className="text-on-surface-variant/50 italic">Awaiting pipeline execution...</div> : traceLogs.map((log, i) => (
+                <div key={i} className={`flex gap-3 ${log.status === 'error' ? 'text-secondary-container font-bold bg-secondary-container/5 py-0.5 border-l-2 border-secondary-container px-2 -ml-[10px]' : 'text-primary-container'}`}>
+                  <span className="opacity-50 min-w-[75px]">[{new Date(log.timestamp || Date.now()).toLocaleTimeString()}]</span>
+                  <span className="opacity-50 min-w-[140px] truncate">[TASK: {log.trace_id}]</span>
+                  <span className="min-w-[100px] font-bold">[AGENT: {log.agent}]</span>
+                  <span className="flex-1 break-words leading-tight">{log.action}</span>
+                </div>
           ))}
-          <div ref={traceEndRef} className="text-primary-container animate-pulse">_</div>
+          <div ref={traceEndRef} className="text-primary-container animate-pulse mt-2">_</div>
         </div>
       </footer>
     </div>

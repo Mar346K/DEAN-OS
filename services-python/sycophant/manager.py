@@ -6,6 +6,7 @@ import logging
 import shutil
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel # <--- ADDED FOR STRICT TYPING
 import httpx
 import redis.asyncio as aioredis
 from contextlib import asynccontextmanager
@@ -115,9 +116,16 @@ async def websocket_endpoint(websocket: WebSocket):
         while True: await websocket.receive_text()
     except WebSocketDisconnect: manager.disconnect(websocket)
 
+# --- NEW: STRICT TYPING FOR FINOPS DISPATCHER ---
+class BuildRequest(BaseModel):
+    prompt: str
+    project_id: str = "00000000-0000-0000-0000-000000000000"
+    rush_mode: bool = False
+
 @app.post("/build")
-async def start_build(intent: dict):
-    execute_assembly_line_task.delay(intent.get("prompt", ""))
+async def start_build(req: BuildRequest):
+    # Passes prompt, ID, and the RUSH_MODE boolean directly to the Celery Worker
+    execute_assembly_line_task.delay(req.prompt, req.project_id, req.rush_mode)
     return {"status": "Assembly Line Queued"}
 
 @app.get("/logs")
