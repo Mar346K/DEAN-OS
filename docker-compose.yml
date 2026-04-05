@@ -45,8 +45,7 @@ services:
       context: .
       dockerfile: services-python/Dockerfile
     container_name: deanos_api
-    # ADD --reload-exclude "staging/*" HERE:
-    command: ["uvicorn", "sycophant.manager:app", "--host", "0.0.0.0", "--port", "8000", "--reload", "--reload-exclude", "staging/*"]
+    command: ["uvicorn", "sycophant.manager:app", "--host", "0.0.0.0", "--port", "8000", "--reload", "--reload-dir", "sycophant"]
     ports:
       - "8000:8000"
     environment:
@@ -122,7 +121,7 @@ services:
       context: .
       dockerfile: services-python/Dockerfile
     container_name: deanos_oubliette
-    command: ["uvicorn", "oubliette.app:app", "--host", "0.0.0.0", "--port", "8002", "--reload", "--reload-exclude", "staging/*"]
+    command: ["uvicorn", "oubliette.app:app", "--host", "0.0.0.0", "--port", "8002"]
     ports:
       - "8002:8002"
     environment:

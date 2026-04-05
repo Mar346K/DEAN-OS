@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from database.session import get_db
 from database.models import TaskTrace
-from tasks import execute_assembly_line_task
+from tasks import execute_assembly_line_task, process_ingestion_task # <--- IMPORT THE NEW TASK
 import valkyrie_crypto
 from tools.ast_mapper import ProjectMapper
 from agents.librarian import Librarian
@@ -177,40 +177,36 @@ async def prune_workspace_venv():
 @app.post("/workspace/map")
 async def trigger_ast_map():
     workspace_dir = "/app/staging/projects/default/workspace"
-    mapper = ProjectMapper(workspace_dir)
-    graph_data = mapper.generate_ui_graph()
-    await manager.broadcast({"type": "ast_map", "payload": graph_data})
-    return {"status": "success", "message": "Workspace Bloom triggered"}
+    try:
+        mapper = ProjectMapper(workspace_dir)
+        graph_data = mapper.generate_ui_graph()
+        await manager.broadcast({"type": "ast_map", "payload": graph_data})
+        return {"status": "success"}
+    except Exception as e:
+        # Crash protection! Tells the UI to stop spinning if it fails.
+        await manager.broadcast({"type": "staging_log", "payload": {"type": "stderr", "text": f"AST Mapper Error: {str(e)}"}})
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/ingest")
 async def ingest_zip(file: UploadFile = File(...)):
+    """
+    Saves the ZIP file and immediately offloads the heavy extraction
+    and vectorization to the Celery Worker queue.
+    """
     workspace_dir = "/app/staging/projects/default/workspace"
     os.makedirs(workspace_dir, exist_ok=True)
     safe_filename = os.path.basename(file.filename)
     file_path = os.path.join(workspace_dir, safe_filename)
-    with open(file_path, "wb") as buffer: shutil.copyfileobj(file.file, buffer)
 
-    oubliette_host = os.getenv("OUBLIETTE_HOST", "oubliette")
-    secret = os.getenv("DAEN_INTERNAL_SECRET", "daen-internal-dev-secret-2026")
-    token = valkyrie_crypto.forge_token("intake-forge", "analyzer", secret)
+    # 1. Save the file to the shared volume
+    with open(file_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
 
-    async with httpx.AsyncClient() as client:
-        try:
-            await client.post(f"http://{oubliette_host}:8002/extract", json={"filename": safe_filename}, headers={"Authorization": f"Bearer {token}"}, timeout=60.0)
-        except Exception: return {"status": "error", "message": "Failed to extract in sandbox"}
+    # 2. Fire and Forget: Send the task to Redis
+    process_ingestion_task.delay(safe_filename, "default")
 
-    if os.path.exists(file_path):
-        try: os.remove(file_path)
-        except OSError: pass
-
-    # --- [NEW] AUTOMATIC FALLBACK SCRUB ---
-    scrub_junk_files(workspace_dir)
-
-    try:
-        librarian = Librarian(project_id="default")
-        asyncio.create_task(asyncio.to_thread(librarian.process_workspace, workspace_dir))
-    except Exception as e: print(f"[INGEST ERROR] Librarian failed to start: {e}")
-    return {"status": "success"}
+    # 3. Return instantly so the UI remains responsive
+    return {"status": "success", "message": "Ingestion queued for background processing."}
 
 @app.get("/output/tree")
 async def get_output_tree():
@@ -231,34 +227,47 @@ async def get_vault_tree():
 async def read_vault_file(payload: dict):
     """Reads a verified file from the Release Vault."""
     target_path = payload.get("path")
-    if not target_path or ".." in target_path: return {"status": "error"}
+
+@app.post("/vault/read")
+async def read_vault_file(payload: dict):
+    """Reads a verified file from the Release Vault."""
+    target_path = payload.get("path", "")
+    safe_target_path = target_path.lstrip("/\\") # <--- THE FIX: Strips leading slashes
+
+    if not safe_target_path or ".." in safe_target_path: return {"status": "error"}
 
     vault_dir = os.path.abspath("/app/staging/projects/default/release_vault")
-    full_path = os.path.abspath(os.path.join(vault_dir, target_path))
+    full_path = os.path.abspath(os.path.join(vault_dir, safe_target_path))
 
     if not full_path.startswith(vault_dir): return {"status": "error"}
     try:
-        with open(full_path, "r", encoding="utf-8") as f:
+        # Added errors="replace" so weird binary files in zips don't crash the reader
+        with open(full_path, "r", encoding="utf-8", errors="replace") as f:
             return {"status": "success", "content": f.read()}
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
 @app.post("/file/read")
 async def read_file(payload: dict):
-    target_path = payload.get("path")
+    target_path = payload.get("path", "")
+    safe_target_path = target_path.lstrip("/\\") # <--- THE FIX
+
     workspace_dir = os.path.abspath("/app/staging/projects/default/workspace")
-    full_path = os.path.abspath(os.path.join(workspace_dir, target_path))
+    full_path = os.path.abspath(os.path.join(workspace_dir, safe_target_path))
     if not full_path.startswith(workspace_dir): return {"status": "error"}
     try:
-        with open(full_path, "r", encoding="utf-8") as f: return {"status": "success", "content": f.read()}
+        with open(full_path, "r", encoding="utf-8", errors="replace") as f:
+            return {"status": "success", "content": f.read()}
     except Exception as e: return {"status": "error", "message": str(e)}
 
 @app.post("/file/write")
 async def write_file(payload: dict):
-    target_path = payload.get("path")
+    target_path = payload.get("path", "")
+    safe_target_path = target_path.lstrip("/\\") # <--- THE FIX
     content = payload.get("content", "")
+
     workspace_dir = os.path.abspath("/app/staging/projects/default/workspace")
-    full_path = os.path.abspath(os.path.join(workspace_dir, target_path))
+    full_path = os.path.abspath(os.path.join(workspace_dir, safe_target_path))
     if not full_path.startswith(workspace_dir): return {"status": "error"}
     try:
         os.makedirs(os.path.dirname(full_path), exist_ok=True)

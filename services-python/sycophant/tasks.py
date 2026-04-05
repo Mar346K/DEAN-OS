@@ -235,6 +235,62 @@ async def async_execute_assembly_line(prompt: str, project_id_str: str = "000000
         finally:
             await engine.dispose()
 
+# --- THE NEW ASYNC INGESTION WORKER ---
+@celery_app.task(name="sycophant.tasks.process_ingestion")
+def process_ingestion_task(safe_filename: str, project_id_str: str = "default"):
+    """
+    Runs completely decoupled from the Web Server.
+    Handles extraction, junk scrubbing, and Librarian neural zipping.
+    """
+    import httpx
+
+    workspace_dir = f"/app/staging/projects/{project_id_str}/workspace"
+    oubliette_host = os.getenv("OUBLIETTE_HOST", "oubliette")
+    secret = os.getenv("DAEN_INTERNAL_SECRET", "daen-internal-dev-secret-2026")
+
+    import valkyrie_crypto
+    token = valkyrie_crypto.forge_token("worker-forge", "analyzer", secret)
+
+    # 1. Ask Oubliette to safely extract it
+    broadcast_to_ui({"type": "agent_trace", "payload": {"trace_id": "INGEST-1", "agent": "Manager", "action": f"Requesting secure extraction of {safe_filename}...", "status": "running"}})
+    try:
+        # Note: We must use a synchronous httpx client here because we are outside an async function
+        with httpx.Client() as client:
+            client.post(f"http://{oubliette_host}:8002/extract", json={"filename": safe_filename, "project_id": project_id_str}, headers={"Authorization": f"Bearer {token}"}, timeout=120.0)
+    except Exception as e:
+        broadcast_to_ui({"type": "agent_trace", "payload": {"trace_id": "INGEST-ERR", "agent": "Manager", "action": f"Extraction failed: {e}", "status": "error"}})
+        return
+
+    # 2. Cleanup the original zip
+    file_path = os.path.join(workspace_dir, safe_filename)
+    if os.path.exists(file_path):
+        try: os.remove(file_path)
+        except OSError: pass
+
+    # 3. Scrub Junk (We must define the local scrub logic here)
+    broadcast_to_ui({"type": "agent_trace", "payload": {"trace_id": "INGEST-2", "agent": "Manager", "action": "Scrubbing virtual environments and __pycache__...", "status": "running"}})
+    junk_names = {'.venv', 'venv', '__pycache__', 'node_modules', '.pytest_cache', '.git'}
+    for root, dirs, files in os.walk(workspace_dir, topdown=False):
+        for name in dirs:
+            if name in junk_names:
+                junk_path = os.path.join(root, name)
+                try: shutil.rmtree(junk_path)
+                except Exception: pass # nosec B110
+
+    # 4. Neural Zip via Librarian
+    broadcast_to_ui({"type": "agent_trace", "payload": {"trace_id": "INGEST-3", "agent": "Librarian", "action": "Initiating Neural Zip vectorization...", "status": "running"}})
+    try:
+        librarian = Librarian(project_id=project_id_str)
+        # Librarian is synchronous, so we just call it directly
+        librarian.process_workspace(workspace_dir)
+        broadcast_to_ui({"type": "agent_trace", "payload": {"trace_id": "INGEST-4", "agent": "Librarian", "action": "Neural Zip complete. Workspace mapped to Mnemosyne.", "status": "success"}})
+
+        # We broadcast a special signal that the UI can listen for to trigger a fetchWorkspace()
+        broadcast_to_ui({"type": "ingest_complete", "payload": {}})
+    except Exception as e:
+        broadcast_to_ui({"type": "agent_trace", "payload": {"trace_id": "INGEST-ERR", "agent": "Librarian", "action": f"Vectorization failed: {e}", "status": "error"}})
+
+# --- EXISTING ASSEMBY LINE TASK ---
 @celery_app.task(name="sycophant.tasks.execute_assembly_line")
 def execute_assembly_line_task(prompt: str, project_id_str: str = "00000000-0000-0000-0000-000000000000", rush_mode: bool = False):
     asyncio.run(async_execute_assembly_line(prompt, project_id_str, rush_mode))

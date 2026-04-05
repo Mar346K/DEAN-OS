@@ -46,6 +46,7 @@ export default function App() {
   const [astEdges, setAstEdges] = useState([]);
   const [promptInput, setPromptInput] = useState("");
   const [isDeploying, setIsDeploying] = useState(false);
+  const [showSecurityOnly, setShowSecurityOnly] = useState(false);
   const traceEndRef = useRef(null);
 
   const [keys, setKeys] = useState({ openai: "", anthropic: "", gemini: "", openrouter: "" });
@@ -172,6 +173,14 @@ export default function App() {
           })));
           setActiveTab("AST_MAPPER");
           break;
+
+        // --- ADDED INGESTION COMPLETE SIGNAL ---
+        case "ingest_complete":
+          console.log("Ingestion Complete signal received. Refreshing workspace...");
+          fetchWorkspace(); // Instantly reloads the file tree
+          break;
+        // ---------------------------------------
+
         default: break;
       }
     };
@@ -651,20 +660,34 @@ export default function App() {
         )}
 
         {activeTab === "AST_MAPPER" && (
-            <>
+            <div className="flex flex-col h-full">
                 <div className="flex justify-between items-end mb-4">
                   <div>
                       <h1 className="font-headline text-4xl font-black text-on-surface tracking-tighter uppercase mb-1">BLAST_RADIUS</h1>
                       <p className="font-headline text-[10px] tracking-[0.2em] text-on-surface-variant uppercase">FORENSIC_PIM_VISUALIZER</p>
                   </div>
+                  <button
+                      onClick={() => setShowSecurityOnly(!showSecurityOnly)}
+                      className={`border px-6 py-2 text-[10px] font-headline font-bold tracking-widest uppercase transition-all shadow-[0_0_15px_rgba(254,0,254,0.1)] ${showSecurityOnly ? 'bg-[#fe00fe]/20 text-[#fe00fe] border-[#fe00fe]' : 'border-[#fe00fe]/30 text-[#fe00fe]/70 hover:bg-[#fe00fe]/10 hover:text-[#fe00fe]'}`}>
+                      {showSecurityOnly ? "🟢 VIEW FULL ARCHITECTURE" : "🔴 SHOW SECURITY SURFACE"}
+                  </button>
                 </div>
                 <div className="flex-1 bg-surface-container-lowest border border-outline-variant/10 relative">
-                  <ReactFlow nodes={astNodes} edges={astEdges} fitView>
+                  <ReactFlow
+                      nodes={showSecurityOnly ? astNodes.map(n => ({
+                          ...n,
+                          hidden: !(n.id.includes("crypto") || n.id.includes("security") || n.id.includes("vault") || astEdges.some(e => (e.source === n.id || e.target === n.id) && (e.source.includes("crypto") || e.target.includes("crypto") || e.source.includes("security") || e.target.includes("security"))))
+                      })) : astNodes}
+                      edges={showSecurityOnly ? astEdges.map(e => ({
+                          ...e,
+                          hidden: !(e.source.includes("crypto") || e.target.includes("crypto") || e.source.includes("security") || e.target.includes("security"))
+                      })) : astEdges}
+                      fitView>
                       <Background color="#3a494b" gap={20} size={1} />
                       <Controls className="bg-surface border-outline-variant text-primary-container fill-primary-container" />
                   </ReactFlow>
                 </div>
-            </>
+            </div>
         )}
 
         {/* --- TIER 2: FACTORY FLOOR (Formerly Staging) --- */}
