@@ -135,14 +135,15 @@ async def get_forensic_logs(db: AsyncSession = Depends(get_db)):
     traces = result.scalars().all()
     return [{"id": t.id, "run_id": str(t.run_id), "trace_id": t.trace_id, "agent_name": t.agent_name, "action": t.action, "status": t.status, "timestamp": t.timestamp.isoformat(), "logs": t.logs} for t in reversed(traces)]
 
-def _scan_directory(base_path):
+def _scan_directory(current_path, root_path):
     tree = []
-    if not os.path.exists(base_path): return tree
-    for entry in os.scandir(base_path):
-        node = {"name": entry.name, "path": os.path.relpath(entry.path, base_path).replace("\\", "/")}
+    if not os.path.exists(current_path): return tree
+    for entry in os.scandir(current_path):
+        # FIX: Calculate path relative to the absolute ROOT of the workspace
+        node = {"name": entry.name, "path": os.path.relpath(entry.path, root_path).replace("\\", "/")}
         if entry.is_dir():
             node["type"] = "folder"
-            node["children"] = _scan_directory(entry.path)
+            node["children"] = _scan_directory(entry.path, root_path)
         else: node["type"] = "file"
         tree.append(node)
     return sorted(tree, key=lambda x: (x["type"] == "file", x["name"]))
@@ -151,7 +152,7 @@ def _scan_directory(base_path):
 async def get_workspace_tree():
     workspace_dir = os.path.abspath("/app/staging/projects/default/workspace")
     os.makedirs(workspace_dir, exist_ok=True)
-    return _scan_directory(workspace_dir)
+    return _scan_directory(workspace_dir, workspace_dir)
 
 @app.post("/workspace/delete")
 async def delete_workspace_item(payload: dict):
@@ -212,7 +213,7 @@ async def ingest_zip(file: UploadFile = File(...)):
 async def get_output_tree():
     workspace_dir = os.path.abspath("/app/staging/projects/default/workspace")
     os.makedirs(workspace_dir, exist_ok=True)
-    return _scan_directory(workspace_dir)
+    return _scan_directory(workspace_dir, workspace_dir)
 
 # --- PHASE 3.5: THE RELEASE VAULT ---
 
@@ -221,7 +222,7 @@ async def get_vault_tree():
     """Scans the clean room for verified, production-ready code."""
     vault_dir = os.path.abspath("/app/staging/projects/default/release_vault")
     os.makedirs(vault_dir, exist_ok=True)
-    return _scan_directory(vault_dir)
+    return _scan_directory(vault_dir, vault_dir)
 
 @app.post("/vault/read")
 async def read_vault_file(payload: dict):
@@ -250,15 +251,23 @@ async def read_vault_file(payload: dict):
 @app.post("/file/read")
 async def read_file(payload: dict):
     target_path = payload.get("path", "")
-    safe_target_path = target_path.lstrip("/\\") # <--- THE FIX
+    safe_target_path = target_path.lstrip("/\\")
 
-    workspace_dir = os.path.abspath("/app/staging/projects/default/workspace")
-    full_path = os.path.abspath(os.path.join(workspace_dir, safe_target_path))
-    if not full_path.startswith(workspace_dir): return {"status": "error"}
+    workspace_dir = "/app/staging/projects/default/workspace"
+    full_path = os.path.join(workspace_dir, safe_target_path)
+
+    print(f"\n[DEBUG FILE READ] 1. UI Requested: '{target_path}'")
+    print(f"[DEBUG FILE READ] 2. Python translated to: '{safe_target_path}'")
+    print(f"[DEBUG FILE READ] 3. Attempting to open: '{full_path}'")
+
     try:
         with open(full_path, "r", encoding="utf-8", errors="replace") as f:
-            return {"status": "success", "content": f.read()}
-    except Exception as e: return {"status": "error", "message": str(e)}
+            content = f.read()
+            print(f"[DEBUG FILE READ] ✅ Success! Read {len(content)} characters.")
+            return {"status": "success", "content": content}
+    except Exception as e:
+        print(f"[DEBUG FILE READ ❌] ERROR: {e}")
+        return {"status": "error", "message": str(e)}
 
 @app.post("/file/write")
 async def write_file(payload: dict):
