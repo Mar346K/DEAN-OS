@@ -19,6 +19,7 @@ from agents.coder import MainCoder
 from agents.tester import Tester
 from agents.analyzer import Analyzer
 from agents.deployer import Deployer
+from agents.librarian import Librarian  # <--- IMPORT LIBRARIAN FOR MEMORY LOOP
 from tools.ast_surgeon import ASTSurgeon
 from sycophant.tools.security import redact_sensitive_info
 
@@ -40,7 +41,6 @@ redis_client = redis.Redis(host=redis_host, port=redis_port, db=0, decode_respon
 
 def broadcast_to_ui(message: dict):
     """Scrubs and publishes messages to the UI WebSocket."""
-    # Serialize, redact, and re-parse to ensure all nested content is scrubbed
     raw_payload = json.dumps(message)
     scrubbed_payload = redact_sensitive_info(raw_payload)
     redis_client.publish("ui_broadcasts", scrubbed_payload)
@@ -70,7 +70,7 @@ def _create_hollow_files(workspace_dir: str, blueprint: dict):
         with open(filepath, "w", encoding="utf-8") as f:
             f.write(content)
 
-# --- THE V5.1 FSM ORCHESTRATOR (3-TIER PIPELINE) ---
+# --- THE V6.0 FSM ORCHESTRATOR (3-TIER PIPELINE + MEMORY LOOP) ---
 
 async def async_execute_assembly_line(prompt: str, project_id_str: str = "00000000-0000-0000-0000-000000000000", rush_mode: bool = False):
     DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://deanos_admin:deanos_vault_2026@db/deanos_history")
@@ -86,11 +86,11 @@ async def async_execute_assembly_line(prompt: str, project_id_str: str = "000000
             run_id = run.id
             p_tag = str(pid) if pid else "default"
 
-            broadcast_to_ui({"type": "agent_trace", "payload": {"trace_id": "SYS-001", "agent": "Manager", "action": f"Initiating 3-Tier Assembly Line...", "status": "running"}})
+            broadcast_to_ui({"type": "agent_trace", "payload": {"trace_id": "SYS-001", "agent": "Manager", "action": f"Initiating v6.0 Assembly Line...", "status": "running"}})
             await log_trace(db, run_id, "SYS-001", "Manager", f"Initiating Assembly Line for: {prompt}", "success")
 
             # --- PHASE 1: CLOUD RESEARCH ---
-            broadcast_to_ui({"type": "agent_trace", "payload": {"trace_id": "RES-001", "agent": "Researcher", "action": "Querying Gemini 2.5 Flash for Technical Brief...", "status": "running"}})
+            broadcast_to_ui({"type": "agent_trace", "payload": {"trace_id": "RES-001", "agent": "Researcher", "action": "Querying for Technical Brief...", "status": "running"}})
             researcher = CloudResearcher()
             tech_brief = await asyncio.to_thread(researcher.research_task, prompt)
             await log_trace(db, run_id, "RES-001", "Researcher", "Technical Brief Acquired.", "success", tech_brief)
@@ -120,7 +120,7 @@ async def async_execute_assembly_line(prompt: str, project_id_str: str = "000000
 
             # --- PHASE 4: ATOMIC NODE EXECUTION (THE FSM LOOP) ---
             surgeon = ASTSurgeon()
-            deployer = Deployer(project_id=p_tag)
+            librarian = Librarian(project_id=p_tag)  # Initialize the Memory Engine
 
             for idx, node in enumerate(blueprint.get("nodes", [])):
                 filename = node["filename"]
@@ -130,6 +130,7 @@ async def async_execute_assembly_line(prompt: str, project_id_str: str = "000000
                 MAX_RETRIES = 2
                 attempt = 1
                 feedback = None
+                cumulative_errors = "" # Track all errors for this node to feed to the Librarian
 
                 while attempt <= MAX_RETRIES:
                     action_msg = f"Atomic Coder targeting {filename}..." if attempt == 1 else f"Fixing errors in {filename} (Attempt {attempt})..."
@@ -140,9 +141,11 @@ async def async_execute_assembly_line(prompt: str, project_id_str: str = "000000
 
                     if not raw_file_path:
                         feedback = "Failed to extract Python from Markdown."
+                        cumulative_errors += f"Attempt {attempt}: {feedback}\n"
                         attempt += 1
                         continue
 
+                    # AST Surgeon (Structural & Security Compliance)
                     try:
                         with open(raw_file_path, "r", encoding="utf-8") as f:
                             raw_code = f.read()
@@ -152,6 +155,7 @@ async def async_execute_assembly_line(prompt: str, project_id_str: str = "000000
                         await log_trace(db, run_id, f"CODE-{idx}-{attempt}", "AST Surgeon", f"Syntax enforced on {filename}", "success")
                     except Exception as e:
                         feedback = f"AST SURGEON REJECTED CODE: {e}"
+                        cumulative_errors += f"Attempt {attempt}: {feedback}\n"
                         attempt += 1
                         continue
 
@@ -161,6 +165,7 @@ async def async_execute_assembly_line(prompt: str, project_id_str: str = "000000
 
                     if not test_file_path:
                         feedback = "Failed to generate tests."
+                        cumulative_errors += f"Attempt {attempt}: {feedback}\n"
                         attempt += 1
                         continue
 
@@ -171,6 +176,12 @@ async def async_execute_assembly_line(prompt: str, project_id_str: str = "000000
 
                     if report.get("status") == "pass":
                         await log_trace(db, run_id, f"ANAL-{idx}-{attempt}", "Analyzer", "Sandbox passed.", "success", str(report))
+
+                        # --- PHASE 12: THE MEMORY LOOP ---
+                        # If the Swarm failed initially but figured it out, save the lesson to global memory
+                        if attempt > 1 and cumulative_errors:
+                            broadcast_to_ui({"type": "agent_trace", "payload": {"trace_id": f"MEM-{idx}", "agent": "Librarian", "action": "Extracting Lesson Learned...", "status": "running"}})
+                            await asyncio.to_thread(librarian.summarize_fix, filename, cumulative_errors, healed_code)
 
                         # --- PHASE 4e. PROMOTION TO RELEASE VAULT ---
                         try:
@@ -195,6 +206,7 @@ async def async_execute_assembly_line(prompt: str, project_id_str: str = "000000
                             break
                     else:
                         feedback = report.get("logs", "Execution Error")
+                        cumulative_errors += f"Attempt {attempt} Sandbox Error:\n{feedback}\n"
                         await log_trace(db, run_id, f"ANAL-{idx}-{attempt}", "Analyzer", "Sandbox failed.", "error", feedback)
                         attempt += 1
 

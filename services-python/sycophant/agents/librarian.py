@@ -6,6 +6,8 @@ import requests
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams, PointStruct
 from sentence_transformers import SentenceTransformer
+import valkyrie_crypto
+from tools.security import redact_sensitive_info
 
 # Setup Paths
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -13,12 +15,13 @@ from routing.gateway import InferenceGateway
 
 class Librarian:
     """
-    The Semantic Indexer of DEAN-OS v5.1.
-    Uses Nemotron 340B to perform 'Neural Zipping' on large legacy codebases,
-    extracting Functional Pointer Graphs (FPG) to save to the Mnemosyne Vector DB.
+    The Semantic Indexer and Memory Engine of DEAN-OS v6.0.
+    Uses Nemotron/Gemini to perform 'Neural Zipping' on codebases and
+    extracts 'Lessons Learned' from bug fixes to build permanent swarm memory.
     """
     def __init__(self, project_id: str = "default"):
         self.project_id = project_id
+        self.secret = os.getenv("DAEN_INTERNAL_SECRET", "daen-internal-dev-secret-2026")
 
         # Load the embedding model (same one used by Mnemosyne)
         print("[LIBRARIAN] Loading Neural Embedding Model (all-MiniLM-L6-v2)...")
@@ -107,7 +110,6 @@ class Librarian:
 
                     # Convert to math vector
                     vector = self.encoder.encode(semantic_text).tolist()
-
                     point_id = abs(hash(semantic_text)) % (10 ** 8) # Qdrant IDs need to be positive integers or UUIDs
 
                     points.append(PointStruct(
@@ -129,3 +131,61 @@ class Librarian:
 
         except Exception as e:
             print(f"[LIBRARIAN ❌] Failed to zip {rel_path}: {e}")
+
+    # --- NEW PHASE 12 METHOD: THE LESSON LOOP ---
+    def summarize_fix(self, filename: str, error_history: str, final_code: str) -> None:
+        """
+        Analyzes a resolved bug, extracts the lesson, and embeds it directly into Qdrant
+        under the 'global_docs' project ID so it can be retrieved forever.
+        """
+        print(f"[LIBRARIAN] 🧠 Analyzing fix for {filename} to update global vector memory...")
+
+        system_instruction = (
+            "You are the DEAN-OS Mnemosyne Engine (Librarian). "
+            "You are analyzing a Python file that initially failed security/sandbox testing but was successfully fixed. "
+            "Extract the fundamental programming, structural, or security lesson from this fix. "
+            "Keep it to ONE concise, actionable sentence that a future AI Coder can use to avoid this exact mistake. "
+            "Output ONLY the single sentence."
+        )
+
+        user_prompt = f"FILE: {filename}\n\nERROR THAT WAS FIXED:\n{error_history}\n\nFINAL WORKING CODE:\n{final_code}\n\nWHAT IS THE LESSON?"
+
+        try:
+            api_key = valkyrie_crypto.unseal_key("gemini", self.secret)
+            if not api_key:
+                 print("[LIBRARIAN ⚠️] Vault locked. Cannot summarize fix.")
+                 return
+
+            api_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+            payload = {
+                "system_instruction": {"parts": [{"text": system_instruction}]},
+                "contents": [{"parts": [{"text": user_prompt}]}],
+                "generationConfig": {"temperature": 0.1, "max_output_tokens": 150}
+            }
+
+            response = requests.post(f"{api_url}?key={api_key}", json=payload, timeout=15.0)
+            response.raise_for_status()
+            lesson = response.json()['candidates'][0]['content']['parts'][0]['text'].strip()
+
+            # Vectorize the lesson
+            semantic_text = f"LESSON LEARNED from {filename}: {lesson}"
+            vector = self.encoder.encode(semantic_text).tolist()
+            point_id = abs(hash(semantic_text)) % (10 ** 8)
+
+            # Upsert to Qdrant under the "global_docs" partition
+            point = PointStruct(
+                id=point_id,
+                vector=vector,
+                payload={
+                    "source": "SYSTEM_MEMORY",
+                    "text": semantic_text,
+                    "project_id": "global_docs"
+                }
+            )
+            self.db_client.upsert(collection_name=self.collection_name, points=[point])
+
+            print(f"[LIBRARIAN SUCCESS] 💾 Permanent Vector Memory Updated: {lesson}")
+
+        except Exception as e:
+            safe_error = redact_sensitive_info(str(e))
+            print(f"[LIBRARIAN ⚠️] Failed to embed lesson: {safe_error}")
